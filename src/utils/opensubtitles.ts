@@ -79,6 +79,27 @@ interface OsSubtitleAttr {
   files?: { file_id?: number; hd?: boolean }[];
 }
 
+/** Human-readable meaning for common OpenSubtitles HTTP status codes. */
+export function httpHint(status: number): string {
+  switch (status) {
+    case 401:
+    case 403:
+      return 'API Key 无效或未授权,请检查 Key 是否正确。';
+    case 404:
+      return '接口或资源不存在,可能是字幕已被移除。';
+    case 406:
+      return '今日/本月下载额度已用完(免费账户有限额),明天再试或升级账户。';
+    case 429:
+      return '请求过于频繁(免费额度限制),请稍等再试。';
+    case 500:
+    case 502:
+    case 503:
+      return 'OpenSubtitles 服务器暂时不可用,请稍后再试。';
+    default:
+      return '';
+  }
+}
+
 export async function searchSubtitles(
   apiKey: string,
   moviehash: string,
@@ -97,13 +118,13 @@ export async function searchSubtitles(
     headers: { 'Api-Key': apiKey, Accept: 'application/json' },
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error('API Key 无效或未授权,请检查后重试。');
+    throw new Error(`搜索失败(HTTP ${res.status}):${httpHint(res.status)}`);
   }
   if (res.status === 429) {
-    throw new Error('请求过于频繁(免费额度限制),请稍后再试。');
+    throw new Error(`搜索失败(429):${httpHint(429)}`);
   }
   if (!res.ok) {
-    throw new Error(`搜索失败:HTTP ${res.status}`);
+    throw new Error(`搜索失败(HTTP ${res.status}):${httpHint(res.status)}`);
   }
   const json = (await res.json()) as { data?: { id?: string; attributes?: OsSubtitleAttr }[] };
   const rows = json.data ?? [];
@@ -143,13 +164,13 @@ export async function downloadSubtitle(
     body: JSON.stringify({ file_id: fileId }),
   });
   if (res.status === 406) {
-    throw new Error('今日免费下载额度已用完(免费账户每天有限额)。');
+    throw new Error(`下载失败(406):${httpHint(406)}`);
   }
   if (res.status === 401 || res.status === 403) {
-    throw new Error('API Key 无效或未授权,请检查后重试。');
+    throw new Error(`下载失败(HTTP ${res.status}):${httpHint(res.status)}`);
   }
   if (!res.ok) {
-    throw new Error(`下载请求失败:HTTP ${res.status}`);
+    throw new Error(`下载请求失败(HTTP ${res.status}):${httpHint(res.status)}`);
   }
   const json = (await res.json()) as { link?: string; remaining?: number };
   if (!json.link) {
@@ -169,7 +190,9 @@ export function osLangToLang(lang: string): 'en' | 'zh' | 'other' {
 /** Fetch + parse the downloaded subtitle into cues. */
 export async function fetchSubtitleCues(link: string): Promise<SubtitleCue[]> {
   const res = await fetch(link);
-  if (!res.ok) throw new Error(`字幕文件下载失败:HTTP ${res.status}`);
+  if (!res.ok) {
+    throw new Error(`字幕文件下载失败(HTTP ${res.status}):${httpHint(res.status)}`);
+  }
   const text = await res.text();
   return parseSubtitles(text);
 }

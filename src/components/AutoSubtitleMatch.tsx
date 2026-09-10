@@ -209,6 +209,16 @@ export function AutoSubtitleMatch({
         </Typography>
       )}
 
+      {/* HTTP status legend — always visible so failures are self-explanatory. */}
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: 'block', lineHeight: 1.5, opacity: 0.85 }}
+      >
+        状态码含义:401/403 Key无效或未授权 · 404 接口/资源不存在 · 406 下载额度用完 ·
+        429 请求过于频繁 · 5xx 服务器暂不可用
+      </Typography>
+
       {/* Results */}
       {results.length > 0 && (
         <List dense sx={{ maxHeight: 320, overflowY: 'auto' }}>

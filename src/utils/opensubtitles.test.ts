@@ -2,7 +2,11 @@
  * Tests for the OpenSubtitles hash + language mapping utilities.
  */
 import { describe, expect, it } from 'vitest';
-import { computeOpenSubtitlesHash, osLangToLang } from './opensubtitles';
+import {
+  computeOpenSubtitlesHash,
+  httpHint,
+  osLangToLang,
+} from './opensubtitles';
 
 /** Build a File filled with a deterministic byte pattern. */
 function makeFile(size: number): File {
@@ -52,6 +56,21 @@ describe('computeOpenSubtitlesHash', () => {
     for (let i = 0; i < size; i++) bytes[i] = i % 251;
     const hash = await computeOpenSubtitlesHash(makeFile(size));
     expect(hash).toBe(referenceHash(size, bytes));
+  });
+});
+
+describe('httpHint', () => {
+  it('explains known status codes', () => {
+    expect(httpHint(401)).toContain('Key');
+    expect(httpHint(403)).toContain('Key');
+    expect(httpHint(404)).toContain('不存在');
+    expect(httpHint(406)).toContain('额度');
+    expect(httpHint(429)).toContain('频繁');
+    expect(httpHint(503)).toContain('服务器');
+  });
+
+  it('returns empty string for unknown codes', () => {
+    expect(httpHint(418)).toBe('');
   });
 });
 
