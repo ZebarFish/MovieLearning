@@ -53,6 +53,22 @@ export function clearDictionaryCache(): void {
   CACHE.clear();
 }
 
+/**
+ * In dev (and `vite preview`) the Vite server proxies /dict/* to the
+ * external APIs server-side — no CORS, no browser-specific network
+ * quirks. In tests (VITEST) and production builds, call the absolute
+ * URLs directly.
+ */
+const DICT_API = import.meta.env.DEV && !import.meta.env.VITEST
+  ? '/dict/api/v2/entries/en'
+  : 'https://api.dictionaryapi.dev/api/v2/entries/en';
+const YOUDAO = import.meta.env.DEV && !import.meta.env.VITEST
+  ? '/dict/youdao/jsonresult'
+  : 'https://dict.youdao.com/jsonresult';
+const DATAMUSE = import.meta.env.DEV && !import.meta.env.VITEST
+  ? '/dict/datamuse/words'
+  : 'https://api.datamuse.com/words';
+
 const POS_TAGS: Record<string, string> = {
   n: 'noun',
   v: 'verb',
@@ -74,7 +90,7 @@ interface DatamuseItem {
  */
 async function fetchFromDatamuse(form: string): Promise<WordDefinition | null> {
   const res = await fetch(
-    `https://api.datamuse.com/words?sp=${encodeURIComponent(form)}&md=d&max=1`,
+    `${DATAMUSE}?sp=${encodeURIComponent(form)}&md=d&max=1`,
     { signal: AbortSignal.timeout(8000) },
   );
   if (!res.ok) return null;
@@ -155,50 +171,48 @@ export function morphologicalVariants(word: string): string[] {
   return out;
 }
 
-/** Single API fetch for one form; null when not found / network failure. */
+/**
+ * Single API fetch for one form.
+ * - WordDefinition → found
+ * - null → definitive "word not found" (HTTP 404 / empty entry)
+ * - 'error' → network failure (source unreachable)
+ */
 async function fetchEntry(
   form: string,
-  retries = 1,
-): Promise<WordDefinition | null> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(
-        `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(form)}`,
-        { signal: AbortSignal.timeout(8000) },
-      );
-      if (!res.ok) return null; // definitive 404 — no point retrying
-      const data = (await res.json()) as RawEntry[];
-      const entry = data[0];
-      if (!entry || !entry.meanings?.length) return null;
+): Promise<WordDefinition | null | 'error'> {
+  try {
+    const res = await fetch(
+      `${DICT_API}/${encodeURIComponent(form)}`,
+      { signal: AbortSignal.timeout(4000) },
+    );
+    if (!res.ok) return null; // definitive 404 — no point retrying
+    const data = (await res.json()) as RawEntry[];
+    const entry = data[0];
+    if (!entry || !entry.meanings?.length) return null;
 
-      const phonetic =
-        entry.phonetic ??
-        entry.phonetics?.find((p) => p.text && p.audio)?.text ??
-        entry.phonetics?.find((p) => p.text)?.text;
-      const audio = entry.phonetics?.find((p) => p.audio)?.audio || undefined;
+    const phonetic =
+      entry.phonetic ??
+      entry.phonetics?.find((p) => p.text && p.audio)?.text ??
+      entry.phonetics?.find((p) => p.text)?.text;
+    const audio = entry.phonetics?.find((p) => p.audio)?.audio || undefined;
 
-      return {
-        word: entry.word,
-        phonetic,
-        audio,
-        meanings: (entry.meanings || [])
-          .map((m) => ({
-            partOfSpeech: m.partOfSpeech,
-            definitions: (m.definitions || [])
-              .slice(0, 3)
-              .map((d) => d.definition),
-          }))
-          .filter((m) => m.definitions.length > 0),
-      };
-    } catch (err) {
-      // Network/timeout error — retry once, then give up on this source.
-      if (attempt >= retries) {
-        void err;
-        return null;
-      }
-    }
+    return {
+      word: entry.word,
+      phonetic,
+      audio,
+      meanings: (entry.meanings || [])
+        .map((m) => ({
+          partOfSpeech: m.partOfSpeech,
+          definitions: (m.definitions || [])
+            .slice(0, 3)
+            .map((d) => d.definition),
+        }))
+        .filter((m) => m.definitions.length > 0),
+    };
+  } catch {
+    // Network / timeout — signal the caller to skip this flaky source.
+    return 'error';
   }
-  return null;
 }
 
 /**
@@ -208,7 +222,7 @@ async function fetchEntry(
  */
 async function fetchFromYoudao(form: string): Promise<WordDefinition | null> {
   const res = await fetch(
-    `https://dict.youdao.com/jsonresult?q=${encodeURIComponent(form)}&type=1&le=eng`,
+    `${YOUDAO}?q=${encodeURIComponent(form)}&type=1&le=eng`,
     { signal: AbortSignal.timeout(8000) },
   );
   if (!res.ok) return null;
@@ -263,18 +277,23 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
 
   try {
     const direct = await fetchEntry(cleaned);
-    if (direct) {
+    if (direct && direct !== 'error') {
       CACHE.set(cleaned, direct);
       return direct;
     }
 
-    // Fallback 1: morphological variants on the main source.
-    for (const variant of morphologicalVariants(cleaned)) {
-      const hit = await fetchEntry(variant);
-      if (hit) {
-        const result: WordDefinition = { ...hit, queried: cleaned };
-        CACHE.set(cleaned, result);
-        return result;
+    // Fallback 1: morphological variants on the main source. A network
+    // error means the source is unreachable — don't grind through every
+    // variant at 4s timeout each; jump straight to the backup sources.
+    if (direct !== 'error') {
+      for (const variant of morphologicalVariants(cleaned)) {
+        const hit = await fetchEntry(variant);
+        if (hit === 'error') break;
+        if (hit) {
+          const result: WordDefinition = { ...hit, queried: cleaned };
+          CACHE.set(cleaned, result);
+          return result;
+        }
       }
     }
 
