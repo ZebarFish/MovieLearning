@@ -20,6 +20,8 @@ export interface WordDefinition {
   audio?: string;
   /** Short meaning groups. */
   meanings: DictionaryMeaning[];
+  /** The surface form the user clicked, when it differed from `word`. */
+  queried?: string;
 }
 
 interface RawDefinition {
@@ -46,9 +48,94 @@ interface RawEntry {
 
 const CACHE = new Map<string, WordDefinition | null>();
 
+/** Reset the in-memory lookup cache (used by tests). */
+export function clearDictionaryCache(): void {
+  CACHE.clear();
+}
+
 /**
- * Look up an English word. Returns null on network/parse failure or if the
- * word is not found.
+ * Morphological fallbacks for inflected forms (chores→chore, studies→study,
+ * running→run, baked→bake …). Ordered most-likely-first; the original word
+ * is NOT included — callers try it themselves.
+ */
+export function morphologicalVariants(word: string): string[] {
+  const out: string[] = [];
+  const push = (s: string): void => {
+    if (s.length >= 3 && /^[a-z'-]+$/.test(s) && !out.includes(s)) out.push(s);
+  };
+  if (word.endsWith('ies') && word.length > 4) push(word.slice(0, -3) + 'y');
+  if (word.endsWith('ves')) push(word.slice(0, -3) + 'f');
+  if (word.endsWith('es')) {
+    push(word.slice(0, -2)); // watches → watch
+    push(word.slice(0, -1)); // chores → chore (does not end in a real -es)
+  }
+  if (word.endsWith('s') && !word.endsWith('ss') && !word.endsWith('is')) {
+    push(word.slice(0, -1)); // errands → errand
+  }
+  if (word.endsWith('ing')) {
+    const b = word.slice(0, -3);
+    push(b + 'e'); // making → make
+    push(b); // doing → do
+    if (b.length >= 3 && b[b.length - 1] === b[b.length - 2]) {
+      push(b.slice(0, -1)); // running → run
+    }
+  }
+  if (word.endsWith('ed')) {
+    const b = word.slice(0, -2);
+    if (word.endsWith('ied')) push(word.slice(0, -3) + 'y'); // carried → carry
+    push(b + 'e'); // baked → bake
+    push(b); // walked → walk
+    if (b.length >= 3 && b[b.length - 1] === b[b.length - 2]) {
+      push(b.slice(0, -1)); // stopped → stop
+    }
+  }
+  if (word.endsWith('er') && word.length > 4) {
+    const b = word.slice(0, -2);
+    if (b.length >= 3 && b[b.length - 1] === b[b.length - 2]) {
+      push(b.slice(0, -1)); // bigger → big
+    }
+  }
+  return out;
+}
+
+/** Single API fetch for one form; null when not found / network failure. */
+async function fetchEntry(
+  form: string,
+): Promise<WordDefinition | null> {
+  const res = await fetch(
+    `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(form)}`,
+    { signal: AbortSignal.timeout(8000) },
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as RawEntry[];
+  const entry = data[0];
+  if (!entry || !entry.meanings?.length) return null;
+
+  const phonetic =
+    entry.phonetic ??
+    entry.phonetics?.find((p) => p.text && p.audio)?.text ??
+    entry.phonetics?.find((p) => p.text)?.text;
+  const audio = entry.phonetics?.find((p) => p.audio)?.audio || undefined;
+
+  return {
+    word: entry.word,
+    phonetic,
+    audio,
+    meanings: (entry.meanings || [])
+      .map((m) => ({
+        partOfSpeech: m.partOfSpeech,
+        definitions: (m.definitions || [])
+          .slice(0, 3)
+          .map((d) => d.definition),
+      }))
+      .filter((m) => m.definitions.length > 0),
+  };
+}
+
+/**
+ * Look up an English word. If the exact form is not found (plural, past
+ * tense, gerund …), morphological variants are tried in order. Returns
+ * null only when nothing matches.
  */
 export async function lookupWord(word: string): Promise<WordDefinition | null> {
   const cleaned = word.trim().toLowerCase();
@@ -61,43 +148,24 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
   if (cached !== undefined) return cached;
 
   try {
-    const res = await fetch(
-      `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleaned)}`,
-      { signal: AbortSignal.timeout(8000) },
-    );
-    if (!res.ok) {
-      CACHE.set(cleaned, null);
-      return null;
-    }
-    const data = (await res.json()) as RawEntry[];
-    const entry = data[0];
-    if (!entry) {
-      CACHE.set(cleaned, null);
-      return null;
+    const direct = await fetchEntry(cleaned);
+    if (direct) {
+      CACHE.set(cleaned, direct);
+      return direct;
     }
 
-    const phonetic =
-      entry.phonetic ??
-      entry.phonetics?.find((p) => p.text && p.audio)?.text ??
-      entry.phonetics?.find((p) => p.text)?.text;
-    const audio = entry.phonetics?.find((p) => p.audio)?.audio || undefined;
+    // Fallback: inflected forms.
+    for (const variant of morphologicalVariants(cleaned)) {
+      const hit = await fetchEntry(variant);
+      if (hit) {
+        const result: WordDefinition = { ...hit, queried: cleaned };
+        CACHE.set(cleaned, result);
+        return result;
+      }
+    }
 
-    const result: WordDefinition = {
-      word: entry.word,
-      phonetic,
-      audio,
-      meanings: (entry.meanings || [])
-        .map((m) => ({
-          partOfSpeech: m.partOfSpeech,
-          definitions: (m.definitions || [])
-            .slice(0, 3)
-            .map((d) => d.definition),
-        }))
-        .filter((m) => m.definitions.length > 0),
-    };
-
-    CACHE.set(cleaned, result);
-    return result;
+    CACHE.set(cleaned, null);
+    return null;
   } catch {
     CACHE.set(cleaned, null);
     return null;

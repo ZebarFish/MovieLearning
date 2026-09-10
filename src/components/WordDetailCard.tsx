@@ -120,6 +120,11 @@ export function WordDetailCard({
                   {def.phonetic}
                 </Typography>
               )}
+              {!loading && def && def.queried && def.queried !== def.word && (
+                <Typography variant="caption" color="primary.main" sx={{ display: 'block', mt: 0.5 }}>
+                  「{def.queried}」是「{def.word}」的变形,以下为原形释义
+                </Typography>
+              )}
               {!loading && def === null && (
                 <Typography variant="caption" color="text.secondary">
                   未找到该词释义(可能是专有名词或拼写特殊)
