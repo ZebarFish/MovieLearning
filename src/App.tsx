@@ -512,6 +512,16 @@ export default function App(): JSX.Element {
             flexDirection: 'column',
           }}
         >
+          <AutoSubtitleMatch
+            videoFile={
+              videoSource && !videoSource.isRemote
+                ? videoSource.file ?? null
+                : null
+            }
+            onAddTrack={handleAddTrackFromFile}
+            collapsible
+            defaultExpanded={false}
+          />
           <SubtitleFileLoader onAddTrack={handleAddTrackFromFile} />
           <SubtitleOffsetControl
             offset={subtitleOffset}
@@ -626,6 +636,14 @@ export default function App(): JSX.Element {
               setVideoSource(s);
               if (s) closeDrawer();
             }}
+          />
+          <AutoSubtitleMatch
+            videoFile={
+              videoSource && !videoSource.isRemote
+                ? videoSource.file ?? null
+                : null
+            }
+            onAddTrack={handleAddTrack}
           />
           <SubtitleDownloader
             tracks={tracks}

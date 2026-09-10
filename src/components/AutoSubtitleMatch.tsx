@@ -4,12 +4,18 @@
  * One-click subtitle lookup for the loaded local video via OpenSubtitles
  * hash matching (accurate — same rip = same subtitles). Requires a free
  * API key; it is stored in localStorage.
+ *
+ * `collapsible` renders a single-line header that expands on click — used
+ * on the main stage so the panel stays discoverable without eating space.
+ * In the media drawer it renders fully expanded.
  */
 import { useState } from 'react';
 import {
   Box,
   Button,
   Chip,
+  Collapse,
+  IconButton,
   Link,
   List,
   ListItem,
@@ -21,6 +27,7 @@ import {
 } from '@mui/material';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import DownloadIcon from '@mui/icons-material/Download';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import type { SubtitleCue, SubtitleLang, SubtitleTrack } from '../types';
 import {
@@ -38,12 +45,20 @@ interface AutoSubtitleMatchProps {
   /** The loaded local video file (hash cannot be computed for URLs). */
   videoFile: File | null;
   onAddTrack: (track: SubtitleTrack) => void;
+  /** Render as a collapsible one-line panel (default: always expanded). */
+  collapsible?: boolean;
+  defaultExpanded?: boolean;
 }
 
 export function AutoSubtitleMatch({
   videoFile,
   onAddTrack,
+  collapsible = false,
+  defaultExpanded = true,
 }: AutoSubtitleMatchProps): JSX.Element {
+  const [expanded, setExpanded] = useState<boolean>(
+    collapsible ? defaultExpanded : true,
+  );
   const [apiKey, setApiKey] = useState<string>(getStoredApiKey());
   const [searching, setSearching] = useState<boolean>(false);
   const [loadingId, setLoadingId] = useState<string | null>(null);
@@ -111,7 +126,7 @@ export function AutoSubtitleMatch({
       onAddTrack(track);
       setInfo(
         `已加载「${c.release || c.id}」(${cues.length} 条)` +
-          (remaining !== null ? ` · 本月剩余下载额度:${remaining}` : ''),
+          (remaining !== null ? ` · 剩余下载额度:${remaining}` : ''),
       );
     } catch (err) {
       const msg = (err as Error).message;
@@ -123,11 +138,8 @@ export function AutoSubtitleMatch({
     }
   };
 
-  return (
-    <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
-      <Typography variant="h6" gutterBottom>
-        ⚡ 自动匹配字幕（推荐）
-      </Typography>
+  const body = (
+    <>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         根据视频文件特征哈希精确匹配字幕 — 准确率远高于按文件名搜索。
         需要免费的 OpenSubtitles API Key。
@@ -169,9 +181,7 @@ export function AutoSubtitleMatch({
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
         <Button
           variant="contained"
-          startIcon={
-            searching ? undefined : <AutoFixHighIcon />
-          }
+          startIcon={searching ? undefined : <AutoFixHighIcon />}
           onClick={() => void handleSearch()}
           disabled={searching || !videoFile}
         >
@@ -276,6 +286,46 @@ export function AutoSubtitleMatch({
             ))}
         </List>
       )}
+    </>
+  );
+
+  return (
+    <Paper elevation={3} sx={{ p: collapsible ? 1.5 : 3, mb: 1 }}>
+      {/* Header — clickable when collapsible. */}
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        onClick={collapsible ? () => setExpanded((v) => !v) : undefined}
+        sx={{
+          cursor: collapsible ? 'pointer' : 'default',
+          userSelect: 'none',
+          py: collapsible ? 0.5 : 0,
+        }}
+      >
+        <Typography variant={collapsible ? 'subtitle2' : 'h6'}>
+          ⚡ 自动匹配字幕{collapsible ? '' : '（推荐）'}
+        </Typography>
+        {collapsible && !expanded && (
+          <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+            根据视频哈希精确匹配字幕(点此展开)
+          </Typography>
+        )}
+        {collapsible && (
+          <IconButton
+            size="small"
+            aria-label={expanded ? '收起' : '展开'}
+            sx={{
+              ml: 'auto',
+              transform: expanded ? 'rotate(180deg)' : 'none',
+              transition: 'transform 0.2s',
+            }}
+          >
+            <ExpandMoreIcon />
+          </IconButton>
+        )}
+      </Stack>
+      {collapsible ? <Collapse in={expanded}>{body}</Collapse> : body}
     </Paper>
   );
 }
