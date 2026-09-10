@@ -66,6 +66,8 @@ export interface SubtitleCandidate {
   /** Human-facing page on opensubtitles.com (fallback if download fails). */
   pageUrl: string;
   extension: string;
+  /** How this candidate was found — exact hash or filename search. */
+  source: 'hash' | 'filename';
 }
 
 interface OsSubtitleAttr {
@@ -140,6 +142,88 @@ export async function searchSubtitles(
       fileId: a.files?.[0]?.file_id ?? null,
       pageUrl: a.url ?? 'https://www.opensubtitles.com',
       extension: '',
+      source: 'hash',
+    };
+  });
+}
+
+/** What could be guessed from a video filename for query-based search. */
+export interface FilenameGuess {
+  /** Cleaned show/movie title (release tags stripped). */
+  query: string;
+  season: number | null;
+  episode: number | null;
+}
+
+/**
+ * Guess a searchable title (and season/episode) from a video filename.
+ * Strips the extension, S01E02 markers (kept as structured data) and
+ * common release tags like 1080p / WEB-DL / x264 / BluRay.
+ */
+export function guessQueryFromFilename(name: string): FilenameGuess {
+  let s = name.replace(/\.[a-z0-9]{1,5}$/i, '');
+  let season: number | null = null;
+  let episode: number | null = null;
+  const se = s.match(/\bs(\d{1,2})\s*e(\d{1,3})\b/i);
+  if (se) {
+    season = Number(se[1]);
+    episode = Number(se[2]);
+    s = s.slice(0, se.index) + ' ' + s.slice((se.index ?? 0) + se[0].length);
+  }
+  s = s.replace(
+    /\b(2160p|1080p|1080i|720p|480p|4k|uhd|web[\s.-]*dl|web[\s.-]*rip|web|nf|amzn|dsnp|bluray|blu[\s.-]*ray|bdrip|brrip|dvdrip|dvdscr|hdtv|pdtv|x264|x265|h[\s.]?264|h[\s.]?265|hevc|avc|aac|ac3|eac3|dd[\s.]?5[\s.]?1|ddp|dts|truehd|atmos|10bit|8bit|hdr10?|\+?hdr|dv|remux|proper|repack|extended|unrated|remastered|internal|dual[\s.-]*audio)\b/gi,
+    ' ',
+  );
+  s = s
+    .replace(/[._]+/g, ' ')
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return { query: s, season, episode };
+}
+
+/**
+ * Query-based fallback search (used when the hash finds nothing — e.g.
+ * transcoded videos). Sharpens TV lookups with season/episode when known.
+ */
+export async function searchSubtitlesByQuery(
+  apiKey: string,
+  guess: FilenameGuess,
+  languages: string = 'en,zh-cn,zh',
+): Promise<SubtitleCandidate[]> {
+  const params = new URLSearchParams({ query: guess.query, languages });
+  if (guess.season !== null) params.set('season_number', String(guess.season));
+  if (guess.episode !== null) {
+    params.set('episode_number', String(guess.episode));
+  }
+  const url = `${API_BASE}/subtitles?${params.toString()}`;
+  const res = await fetch(url, {
+    headers: { 'Api-Key': apiKey, Accept: 'application/json' },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`搜索失败(HTTP ${res.status}):${httpHint(res.status)}`);
+  }
+  if (res.status === 429) {
+    throw new Error(`搜索失败(429):${httpHint(429)}`);
+  }
+  if (!res.ok) {
+    throw new Error(`搜索失败(HTTP ${res.status}):${httpHint(res.status)}`);
+  }
+  const json = (await res.json()) as { data?: { id?: string; attributes?: OsSubtitleAttr }[] };
+  const rows = json.data ?? [];
+  return rows.map((row, i) => {
+    const a = row.attributes ?? {};
+    return {
+      id: row.id ?? String(i),
+      language: a.language ?? '?',
+      release: a.release ?? a.subtitle_id ?? '',
+      downloads: a.downloadsCount ?? 0,
+      rating: a.ratings ?? 0,
+      hearingImpaired: Boolean(a.hearing_impaired),
+      fileId: a.files?.[0]?.file_id ?? null,
+      pageUrl: a.url ?? 'https://www.opensubtitles.com',
+      extension: '',
+      source: 'filename' as const,
     };
   });
 }

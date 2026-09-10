@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeOpenSubtitlesHash,
+  guessQueryFromFilename,
   httpHint,
   osLangToLang,
 } from './opensubtitles';
@@ -56,6 +57,33 @@ describe('computeOpenSubtitlesHash', () => {
     for (let i = 0; i < size; i++) bytes[i] = i % 251;
     const hash = await computeOpenSubtitlesHash(makeFile(size));
     expect(hash).toBe(referenceHash(size, bytes));
+  });
+});
+
+describe('guessQueryFromFilename', () => {
+  it('extracts title and season/episode from a TV release name', () => {
+    const g = guessQueryFromFilename(
+      'Friends.S01E02.1080p.WEB-DL.x264-GROUP.mkv',
+    );
+    expect(g.season).toBe(1);
+    expect(g.episode).toBe(2);
+    expect(g.query).not.toContain('1080p');
+    expect(g.query).not.toContain('x264');
+    expect(g.query.toLowerCase()).toContain('friends');
+  });
+
+  it('strips release tags from movie filenames', () => {
+    const g = guessQueryFromFilename('Inception.2010.720p.BluRay.x265.mkv');
+    expect(g.season).toBeNull();
+    expect(g.episode).toBeNull();
+    expect(g.query.toLowerCase()).toContain('inception');
+    expect(g.query).not.toMatch(/720p|bluray|x265/i);
+  });
+
+  it('collapses dot separators into spaces', () => {
+    const g = guessQueryFromFilename('The.Office.US.S02E05.720p.mkv');
+    expect(g.query).not.toContain('.');
+    expect(g.query.toLowerCase()).toContain('the office');
   });
 });
 

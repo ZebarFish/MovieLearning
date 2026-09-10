@@ -9,7 +9,7 @@
  * on the main stage so the panel stays discoverable without eating space.
  * In the media drawer it renders fully expanded.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Box,
   Button,
@@ -35,9 +35,12 @@ import {
   downloadSubtitle,
   fetchSubtitleCues,
   getStoredApiKey,
+  guessQueryFromFilename,
   osLangToLang,
   searchSubtitles,
+  searchSubtitlesByQuery,
   storeApiKey,
+  type FilenameGuess,
   type SubtitleCandidate,
 } from '../utils/opensubtitles';
 
@@ -65,7 +68,20 @@ export function AutoSubtitleMatch({
   const [results, setResults] = useState<SubtitleCandidate[]>([]);
   const [error, setError] = useState<string>('');
   const [info, setInfo] = useState<string>('');
+  const [queryInput, setQueryInput] = useState<string>('');
+  const [lastGuess, setLastGuess] = useState<FilenameGuess | null>(null);
 
+  // Prefill the keyword box from the video filename (release tags stripped).
+  useEffect(() => {
+    if (videoFile) {
+      const g = guessQueryFromFilename(videoFile.name);
+      setQueryInput(g.query);
+      setLastGuess(g);
+    } else {
+      setQueryInput('');
+      setLastGuess(null);
+    }
+  }, [videoFile]);
   const handleSaveKey = (): void => {
     storeApiKey(apiKey.trim());
     setInfo(apiKey.trim() ? 'API Key 已保存。' : 'API Key 已清除。');
@@ -90,18 +106,78 @@ export function AutoSubtitleMatch({
     setSearching(true);
     try {
       const hash = await computeOpenSubtitlesHash(videoFile);
-      const found = await searchSubtitles(
+      let found = await searchSubtitles(
         apiKey.trim(),
         hash,
         'en,zh-cn,zh',
         videoFile.size,
       );
-      setResults(found);
-      if (found.length === 0) {
-        setInfo('哈希匹配没有找到字幕。可尝试下方关键词搜索,或确认视频是原版文件(转码过的可能匹配不到)。');
-      } else {
-        setInfo(`找到 ${found.length} 条匹配字幕,按下载量排序,点击「加载」直接导入。`);
+      if (found.length > 0) {
+        setResults(found);
+        setInfo(`哈希精确匹配到 ${found.length} 条字幕(时间轴与视频完全同步),点击「加载」直接导入。`);
+        return;
       }
+      // Hash found nothing (e.g. transcoded rip) → filename fallback.
+      const guess: FilenameGuess =
+        lastGuess && lastGuess.query
+          ? lastGuess
+          : guessQueryFromFilename(videoFile.name);
+      if (guess.query) {
+        found = await searchSubtitlesByQuery(apiKey.trim(), guess);
+        setLastGuess(guess);
+        if (found.length === 0) {
+          setResults([]);
+          setInfo(
+            `哈希匹配和文件名搜索「${guess.query}」都没有找到字幕。` +
+              '可修改关键词再搜,或确认视频对应的剧集信息。',
+          );
+        } else {
+          setResults(found);
+          setInfo(
+            `哈希没有精确匹配,已改用文件名搜索「${guess.query}」` +
+              (guess.season !== null ? `(S${guess.season}E${guess.episode})` : '') +
+              `找到 ${found.length} 条。优先选下载量高、版本名与视频文件名接近的字幕;` +
+              '时间若有偏差,用上方「字幕对时」微调即可。',
+          );
+        }
+      } else {
+        setInfo('哈希匹配没有找到字幕,且无法从文件名提取关键词,请手动输入关键词搜索。');
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  /** Manual keyword search from the input box. */
+  const handleQuerySearch = async (): Promise<void> => {
+    const q = queryInput.trim();
+    setError('');
+    setInfo('');
+    if (!apiKey.trim()) {
+      setError('请先填入 OpenSubtitles API Key(免费申请,见上方链接)。');
+      return;
+    }
+    if (!q) {
+      setError('请输入剧名/电影名关键词。');
+      return;
+    }
+    storeApiKey(apiKey.trim());
+    setSearching(true);
+    try {
+      const guess: FilenameGuess = {
+        query: q,
+        season: lastGuess?.season ?? null,
+        episode: lastGuess?.episode ?? null,
+      };
+      const found = await searchSubtitlesByQuery(apiKey.trim(), guess);
+      setResults(found);
+      setInfo(
+        found.length === 0
+          ? `关键词「${q}」没有找到字幕,试试换个说法(如英文名)。`
+          : `找到 ${found.length} 条,优先选下载量高、版本名与视频接近的字幕;时间若有偏差,用上方「字幕对时」微调即可。`,
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -190,13 +266,41 @@ export function AutoSubtitleMatch({
           onClick={() => void handleSearch()}
           disabled={searching || !videoFile}
         >
-          {searching ? '正在计算哈希并搜索…' : '🔍 根据视频自动搜索字幕'}
+          {searching ? '正在搜索…' : '🔍 根据视频自动搜索字幕'}
         </Button>
         {!videoFile && (
           <Typography variant="caption" color="text.secondary">
             （需要先加载本地视频文件）
           </Typography>
         )}
+      </Stack>
+
+      {/* Manual keyword fallback — pre-filled from the video filename. */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1}
+        alignItems={{ sm: 'center' }}
+        sx={{ mb: 1 }}
+      >
+        <TextField
+          size="small"
+          label="关键词搜索(哈希没找到时用)"
+          placeholder="剧名 / 电影名,如 Friends"
+          value={queryInput}
+          onChange={(e) => setQueryInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void handleQuerySearch();
+          }}
+          sx={{ flex: 1 }}
+        />
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => void handleQuerySearch()}
+          disabled={searching || !queryInput.trim()}
+        >
+          按关键词搜
+        </Button>
       </Stack>
 
       {(info || error) && (
@@ -270,6 +374,13 @@ export function AutoSubtitleMatch({
                           ? 'secondary'
                           : 'primary'
                       }
+                      variant="outlined"
+                      sx={{ height: 20, fontSize: '0.7rem' }}
+                    />
+                    <Chip
+                      size="small"
+                      label={c.source === 'hash' ? '哈希精确' : '文件名'}
+                      color={c.source === 'hash' ? 'success' : 'default'}
                       variant="outlined"
                       sx={{ height: 20, fontSize: '0.7rem' }}
                     />
