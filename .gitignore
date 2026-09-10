@@ -43,3 +43,8 @@ coverage/
 
 # Misc
 *.local
+
+# Stray tsc build artifacts (vite.config.ts is the real config)
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
