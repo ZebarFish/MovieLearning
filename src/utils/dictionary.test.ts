@@ -95,4 +95,38 @@ describe('lookupWord with morphological fallback', () => {
     // Original + several variants attempted.
     expect(fetchMock.mock.calls.length).toBeGreaterThan(2);
   });
+
+  it('falls back to Datamuse when the main source is unreachable', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('dictionaryapi.dev')) {
+        throw new TypeError('network unreachable');
+      }
+      if (u.includes('datamuse.com')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              word: 'chores',
+              defHeadword: 'chore',
+              defs: [
+                'n\tA task, especially a regularly needed task.',
+                'n\tA tedious routine task.',
+              ],
+            },
+          ],
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const result = await lookupWord('chores');
+    expect(result).not.toBeNull();
+    expect(result!.word).toBe('chore');
+    expect(result!.queried).toBe('chores');
+    expect(result!.meanings[0]!.partOfSpeech).toBe('noun');
+    expect(result!.meanings[0]!.definitions[0]).toContain('A task');
+  });
 });

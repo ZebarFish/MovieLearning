@@ -53,6 +53,63 @@ export function clearDictionaryCache(): void {
   CACHE.clear();
 }
 
+const POS_TAGS: Record<string, string> = {
+  n: 'noun',
+  v: 'verb',
+  adj: 'adjective',
+  adv: 'adverb',
+  u: '',
+};
+
+interface DatamuseItem {
+  word: string;
+  defs?: string[];
+  defHeadword?: string;
+}
+
+/**
+ * Backup source (Datamuse / WordNet) — highly reliable and it resolves
+ * inflected forms natively (querying "chores" returns defs with
+ * defHeadword "chore"). Returns null on any failure.
+ */
+async function fetchFromDatamuse(form: string): Promise<WordDefinition | null> {
+  const res = await fetch(
+    `https://api.datamuse.com/words?sp=${encodeURIComponent(form)}&md=d&max=1`,
+    { signal: AbortSignal.timeout(8000) },
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as DatamuseItem[];
+  const item = data[0];
+  if (!item?.defs?.length) return null;
+
+  const groups = new Map<string, string[]>();
+  for (const raw of item.defs) {
+    const tab = raw.indexOf('\t');
+    if (tab === -1) continue;
+    const tag = raw.slice(0, tab);
+    const text = raw.slice(tab + 1).trim();
+    if (!text) continue;
+    const pos = POS_TAGS[tag] ?? tag;
+    const list = groups.get(pos) ?? [];
+    list.push(text);
+    groups.set(pos, list);
+  }
+  const meanings = [...groups.entries()]
+    .map(([partOfSpeech, definitions]) => ({
+      partOfSpeech,
+      definitions: definitions.slice(0, 3),
+    }))
+    .filter((m) => m.definitions.length > 0);
+  if (meanings.length === 0) return null;
+
+  const headword = item.defHeadword ?? item.word;
+  return {
+    word: headword,
+    meanings,
+    queried: form !== headword ? form : undefined,
+  };
+}
+
 /**
  * Morphological fallbacks for inflected forms (chores→chore, studies→study,
  * running→run, baked→bake …). Ordered most-likely-first; the original word
@@ -101,35 +158,47 @@ export function morphologicalVariants(word: string): string[] {
 /** Single API fetch for one form; null when not found / network failure. */
 async function fetchEntry(
   form: string,
+  retries = 1,
 ): Promise<WordDefinition | null> {
-  const res = await fetch(
-    `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(form)}`,
-    { signal: AbortSignal.timeout(8000) },
-  );
-  if (!res.ok) return null;
-  const data = (await res.json()) as RawEntry[];
-  const entry = data[0];
-  if (!entry || !entry.meanings?.length) return null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(
+        `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(form)}`,
+        { signal: AbortSignal.timeout(8000) },
+      );
+      if (!res.ok) return null; // definitive 404 — no point retrying
+      const data = (await res.json()) as RawEntry[];
+      const entry = data[0];
+      if (!entry || !entry.meanings?.length) return null;
 
-  const phonetic =
-    entry.phonetic ??
-    entry.phonetics?.find((p) => p.text && p.audio)?.text ??
-    entry.phonetics?.find((p) => p.text)?.text;
-  const audio = entry.phonetics?.find((p) => p.audio)?.audio || undefined;
+      const phonetic =
+        entry.phonetic ??
+        entry.phonetics?.find((p) => p.text && p.audio)?.text ??
+        entry.phonetics?.find((p) => p.text)?.text;
+      const audio = entry.phonetics?.find((p) => p.audio)?.audio || undefined;
 
-  return {
-    word: entry.word,
-    phonetic,
-    audio,
-    meanings: (entry.meanings || [])
-      .map((m) => ({
-        partOfSpeech: m.partOfSpeech,
-        definitions: (m.definitions || [])
-          .slice(0, 3)
-          .map((d) => d.definition),
-      }))
-      .filter((m) => m.definitions.length > 0),
-  };
+      return {
+        word: entry.word,
+        phonetic,
+        audio,
+        meanings: (entry.meanings || [])
+          .map((m) => ({
+            partOfSpeech: m.partOfSpeech,
+            definitions: (m.definitions || [])
+              .slice(0, 3)
+              .map((d) => d.definition),
+          }))
+          .filter((m) => m.definitions.length > 0),
+      };
+    } catch (err) {
+      // Network/timeout error — retry once, then give up on this source.
+      if (attempt >= retries) {
+        void err;
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -154,7 +223,7 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
       return direct;
     }
 
-    // Fallback: inflected forms.
+    // Fallback 1: morphological variants on the main source.
     for (const variant of morphologicalVariants(cleaned)) {
       const hit = await fetchEntry(variant);
       if (hit) {
@@ -162,6 +231,14 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
         CACHE.set(cleaned, result);
         return result;
       }
+    }
+
+    // Fallback 2: Datamuse — reliable in CN networks, resolves inflections
+    // natively (chores → defs + defHeadword "chore").
+    const dm = await fetchFromDatamuse(cleaned);
+    if (dm) {
+      CACHE.set(cleaned, dm);
+      return dm;
     }
 
     CACHE.set(cleaned, null);
