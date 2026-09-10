@@ -83,10 +83,16 @@ export async function searchSubtitles(
   apiKey: string,
   moviehash: string,
   languages: string = 'en,zh-cn,zh',
+  fileSize?: number,
 ): Promise<SubtitleCandidate[]> {
-  const url =
-    `${API_BASE}/subtitles/search?moviehash=${encodeURIComponent(moviehash)}` +
+  // Official search endpoint is GET /subtitles (NOT /subtitles/search).
+  // Sending moviebytesize alongside moviehash sharpens the exact match.
+  let url =
+    `${API_BASE}/subtitles?moviehash=${encodeURIComponent(moviehash)}` +
     `&languages=${encodeURIComponent(languages)}`;
+  if (typeof fileSize === 'number' && Number.isFinite(fileSize)) {
+    url += `&moviebytesize=${fileSize}`;
+  }
   const res = await fetch(url, {
     headers: { 'Api-Key': apiKey, Accept: 'application/json' },
   });

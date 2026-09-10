@@ -90,7 +90,12 @@ export function AutoSubtitleMatch({
     setSearching(true);
     try {
       const hash = await computeOpenSubtitlesHash(videoFile);
-      const found = await searchSubtitles(apiKey.trim(), hash);
+      const found = await searchSubtitles(
+        apiKey.trim(),
+        hash,
+        'en,zh-cn,zh',
+        videoFile.size,
+      );
       setResults(found);
       if (found.length === 0) {
         setInfo('哈希匹配没有找到字幕。可尝试下方关键词搜索,或确认视频是原版文件(转码过的可能匹配不到)。');
