@@ -29,7 +29,9 @@ import { VocabularyPanel } from './components/VocabularyPanel';
 import { LearningSteps } from './components/LearningSteps';
 import { SubtitleDownloader } from './components/SubtitleDownloader';
 import { SubtitleFileLoader } from './components/SubtitleFileLoader';
+import { SubtitleOffsetControl } from './components/SubtitleOffsetControl';
 import { AutoSubtitleMatch } from './components/AutoSubtitleMatch';
+import { shiftTracks } from './utils/subtitleOffset';
 import { WordDetailCard } from './components/WordDetailCard';
 import { useVideoPlayer } from './hooks/useVideoPlayer';
 import { useVocabulary } from './hooks/useVocabulary';
@@ -113,6 +115,8 @@ type DrawerKind = 'media' | 'steps' | null;
 export default function App(): JSX.Element {
   const [videoSource, setVideoSource] = useState<VideoSource | null>(null);
   const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
+  /** Global subtitle timeline offset (seconds) for A/V sync nudging. */
+  const [subtitleOffset, setSubtitleOffset] = useState<number>(0);
   const [displayMode, setDisplayMode] = useState<SubtitleDisplayMode>('en');
   const [subtitleVisible, setSubtitleVisible] = useState<boolean>(true);
   const [stepIndex, setStepIndex] = useState<number>(0);
@@ -150,16 +154,24 @@ export default function App(): JSX.Element {
   const study = useStudyProgress(videoName);
   const currentStep = LEARNING_STEPS[Math.min(stepIndex, LEARNING_STEPS.length - 1)]!;
 
+  // Playback-facing tracks carry the sync offset (originals stay untouched
+  // so repeated nudges never accumulate error). Track management UI keeps
+  // using the original `tracks`.
+  const playbackTracks = useMemo(
+    () => shiftTracks(tracks, subtitleOffset),
+    [tracks, subtitleOffset],
+  );
+
   // Pick the primary track for the subtitle list, respecting the display
   // mode toggle (仅中 → show the Chinese track in the list, etc.).
   const primaryTrack = useMemo<SubtitleTrack | null>(() => {
-    if (tracks.length === 0) return null;
-    const en = tracks.find((t) => t.lang === 'en');
-    const zh = tracks.find((t) => t.lang === 'zh');
+    if (playbackTracks.length === 0) return null;
+    const en = playbackTracks.find((t) => t.lang === 'en');
+    const zh = playbackTracks.find((t) => t.lang === 'zh');
     if (displayMode === 'zh' && zh) return zh;
     if (displayMode === 'en' && en) return en;
-    return en ?? tracks[0];
-  }, [tracks, displayMode]);
+    return en ?? playbackTracks[0];
+  }, [playbackTracks, displayMode]);
 
   const handleAddTrack = useCallback((track: SubtitleTrack): void => {
     setTracks((prev) => {
@@ -471,7 +483,7 @@ export default function App(): JSX.Element {
             <VideoPlayer
               source={videoSource}
               videoRef={videoRef}
-              tracks={tracks}
+              tracks={playbackTracks}
               displayMode={displayMode}
               onDisplayModeChange={setDisplayMode}
               currentTime={currentTime}
@@ -501,6 +513,10 @@ export default function App(): JSX.Element {
           }}
         >
           <SubtitleFileLoader onAddTrack={handleAddTrackFromFile} />
+          <SubtitleOffsetControl
+            offset={subtitleOffset}
+            onChange={setSubtitleOffset}
+          />
           <Box sx={{ flex: 1, minHeight: 0 }}>
           {guided && studyStage === 'blind' ? (
             <BlindPanel
