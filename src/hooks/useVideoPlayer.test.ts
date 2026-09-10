@@ -19,6 +19,14 @@ function buildFakeMedia(): HTMLMediaElement {
   return media;
 }
 
+/** Attach a fake media element via the hook's callback ref (not .current=). */
+function attachMedia(
+  result: { current: { videoRef: unknown } },
+  media: HTMLMediaElement | null,
+): void {
+  (result.current.videoRef as (el: HTMLMediaElement | null) => void)(media);
+}
+
 describe('useVideoPlayer — playback rate', () => {
   it('starts at 1x', () => {
     const { result } = renderHook(() => useVideoPlayer());
@@ -28,8 +36,7 @@ describe('useVideoPlayer — playback rate', () => {
   it('reflects the media element rate after setPlaybackRate', () => {
     const { result } = renderHook(() => useVideoPlayer());
     // Attach fake media so the ref resolves.
-    (result.current.videoRef as { current: HTMLMediaElement }).current =
-      buildFakeMedia();
+    act(() => attachMedia(result, buildFakeMedia()));
 
     act(() => result.current.setPlaybackRate(0.5));
     expect(result.current.playbackRate).toBe(0.5);
@@ -48,8 +55,7 @@ describe('useVideoPlayer — playback rate', () => {
   it('updates when the element raises a ratechange event', () => {
     const { result } = renderHook(() => useVideoPlayer());
     const media = buildFakeMedia();
-    (result.current.videoRef as { current: HTMLMediaElement }).current =
-      media;
+    act(() => attachMedia(result, media));
 
     act(() => {
       media.dispatchEvent(new Event('ratechange'));

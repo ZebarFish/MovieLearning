@@ -47,6 +47,7 @@ export function VideoSelector({
       name: file.name,
       isRemote: false,
       kind,
+      file,
     });
   };
 

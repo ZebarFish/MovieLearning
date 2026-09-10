@@ -24,6 +24,8 @@ export interface VideoSource {
   isRemote: boolean;
   /** Whether the element is a video (with picture) or an audio (no picture). */
   kind: 'video' | 'audio';
+  /** Original File handle when loaded from disk (enables hash-based subtitle lookup). */
+  file?: File;
 }
 
 /** Semantic language tag used to drive UI flags & TTS voice selection. */

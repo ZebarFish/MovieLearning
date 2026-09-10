@@ -29,6 +29,7 @@ import { VocabularyPanel } from './components/VocabularyPanel';
 import { LearningSteps } from './components/LearningSteps';
 import { SubtitleDownloader } from './components/SubtitleDownloader';
 import { SubtitleFileLoader } from './components/SubtitleFileLoader';
+import { AutoSubtitleMatch } from './components/AutoSubtitleMatch';
 import { WordDetailCard } from './components/WordDetailCard';
 import { useVideoPlayer } from './hooks/useVideoPlayer';
 import { useVocabulary } from './hooks/useVocabulary';
