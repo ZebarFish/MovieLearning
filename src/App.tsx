@@ -522,7 +522,11 @@ export default function App(): JSX.Element {
             collapsible
             defaultExpanded={false}
           />
-          <SubtitleFileLoader onAddTrack={handleAddTrackFromFile} />
+          <SubtitleFileLoader
+            onAddTrack={handleAddTrackFromFile}
+            collapsible
+            defaultExpanded={false}
+          />
           <SubtitleOffsetControl
             offset={subtitleOffset}
             onChange={setSubtitleOffset}
@@ -680,10 +684,7 @@ export default function App(): JSX.Element {
           <LearningSteps
             steps={LEARNING_STEPS}
             currentIndex={stepIndex}
-            onChange={(idx) => {
-              setStepIndex(idx);
-              closeDrawer();
-            }}
+            onChange={(idx) => setStepIndex(idx)}
           />
         </Box>
       </Drawer>
