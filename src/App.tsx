@@ -30,6 +30,7 @@ import { LearningSteps } from './components/LearningSteps';
 import { SubtitleDownloader } from './components/SubtitleDownloader';
 import { SubtitleFileLoader } from './components/SubtitleFileLoader';
 import { SubtitleOffsetControl } from './components/SubtitleOffsetControl';
+import { CollapsiblePanel } from './components/CollapsiblePanel';
 import { AutoSubtitleMatch } from './components/AutoSubtitleMatch';
 import { shiftTracks } from './utils/subtitleOffset';
 import { WordDetailCard } from './components/WordDetailCard';
@@ -512,25 +513,16 @@ export default function App(): JSX.Element {
             flexDirection: 'column',
           }}
         >
-          <AutoSubtitleMatch
-            videoFile={
-              videoSource && !videoSource.isRemote
-                ? videoSource.file ?? null
-                : null
-            }
-            onAddTrack={handleAddTrackFromFile}
-            collapsible
-            defaultExpanded={false}
-          />
-          <SubtitleFileLoader
-            onAddTrack={handleAddTrackFromFile}
-            collapsible
-            defaultExpanded={false}
-          />
-          <SubtitleOffsetControl
-            offset={subtitleOffset}
-            onChange={setSubtitleOffset}
-          />
+          <CollapsiblePanel
+            title="字幕配置"
+            hint="加载字幕 · 时间轴对时(点此展开)"
+          >
+            <SubtitleFileLoader onAddTrack={handleAddTrackFromFile} />
+            <SubtitleOffsetControl
+              offset={subtitleOffset}
+              onChange={setSubtitleOffset}
+            />
+          </CollapsiblePanel>
           <Box sx={{ flex: 1, minHeight: 0 }}>
           {guided && studyStage === 'blind' ? (
             <BlindPanel
