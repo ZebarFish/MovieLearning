@@ -96,6 +96,40 @@ describe('lookupWord with morphological fallback', () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(2);
   });
 
+  it('falls back to Youdao Chinese definitions when other sources fail', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('dictionaryapi.dev') || u.includes('datamuse.com')) {
+        throw new TypeError('network unreachable');
+      }
+      if (u.includes('dict.youdao.com')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ussm: 'tʃɔːrz',
+            basic: [
+              'n. 日常杂务，家务活；困难而乏味的工作，苦差事（chore 的复数）；零工',
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const result = await lookupWord('chores');
+    expect(result).not.toBeNull();
+    expect(result!.word).toBe('chores');
+    expect(result!.phonetic).toBe('tʃɔːrz');
+    expect(result!.meanings[0]!.partOfSpeech).toBe('n.');
+    expect(result!.meanings[0]!.definitions).toEqual([
+      '日常杂务，家务活',
+      '困难而乏味的工作，苦差事（chore 的复数）',
+      '零工',
+    ]);
+  });
+
   it('falls back to Datamuse when the main source is unreachable', async () => {
     const fetchMock = vi.fn(async (url: unknown) => {
       const u = String(url);

@@ -202,6 +202,51 @@ async function fetchEntry(
 }
 
 /**
+ * Third source: Youdao public jsonresult endpoint — Chinese definitions
+ * (most useful for CN learners) + IPA; its `basic` text even annotates
+ * inflections ("（chore 的复数）"). Unofficial API: treat as best-effort.
+ */
+async function fetchFromYoudao(form: string): Promise<WordDefinition | null> {
+  const res = await fetch(
+    `https://dict.youdao.com/jsonresult?q=${encodeURIComponent(form)}&type=1&le=eng`,
+    { signal: AbortSignal.timeout(8000) },
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as {
+    basic?: string[] | string;
+    ussm?: string;
+    uksm?: string;
+  };
+
+  const rawBasic = Array.isArray(data.basic)
+    ? data.basic
+    : data.basic
+      ? [data.basic]
+      : [];
+  const meanings = rawBasic
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      // Split "n. 日常杂务，家务活；苦差事（chore 的复数）；零工" into
+      // a part-of-speech prefix and individual definitions.
+      const m = line.match(/^([a-z]+\.)\s*(.+)$/i);
+      const pos = m ? m[1] : '';
+      const body = m ? m[2] : line;
+      const definitions = body
+        .split(/[；;]/)
+        .map((d) => d.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      return { partOfSpeech: pos, definitions };
+    })
+    .filter((m) => m.definitions.length > 0);
+  if (meanings.length === 0) return null;
+
+  const phonetic = data.ussm || data.uksm || undefined;
+  return { word: form, phonetic, meanings };
+}
+
+/**
  * Look up an English word. If the exact form is not found (plural, past
  * tense, gerund …), morphological variants are tried in order. Returns
  * null only when nothing matches.
@@ -233,8 +278,15 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
       }
     }
 
-    // Fallback 2: Datamuse — reliable in CN networks, resolves inflections
-    // natively (chores → defs + defHeadword "chore").
+    // Fallback 2: Youdao — Chinese definitions, best for CN learners.
+    const yd = await fetchFromYoudao(cleaned);
+    if (yd) {
+      CACHE.set(cleaned, yd);
+      return yd;
+    }
+
+    // Fallback 3: Datamuse — resolves inflections natively
+    // (chores → defs + defHeadword "chore").
     const dm = await fetchFromDatamuse(cleaned);
     if (dm) {
       CACHE.set(cleaned, dm);
