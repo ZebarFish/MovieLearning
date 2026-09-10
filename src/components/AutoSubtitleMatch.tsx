@@ -29,11 +29,21 @@ import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import type { SubtitleCue, SubtitleLang, SubtitleTrack } from '../types';
+import { fetchSubtitleText } from '../utils/subtitleSources';
+import { parseSubtitles } from '../utils/subtitleParser';
+import {
+  canWriteToFolder,
+  downloadTextFile,
+  ensureDirPermission,
+  getSavedDir,
+  pickResourcesDir,
+  saveTextToDir,
+} from '../utils/subtitleStore';
 import {
   computeOpenSubtitlesHash,
   downloadSubtitle,
-  fetchSubtitleCues,
   getStoredApiKey,
   guessQueryFromFilename,
   osLangToLang,
@@ -43,6 +53,12 @@ import {
   type FilenameGuess,
   type SubtitleCandidate,
 } from '../utils/opensubtitles';
+
+/** Pending subtitle file awaiting user confirmation to save. */
+interface PendingSave {
+  filename: string;
+  text: string;
+}
 
 interface AutoSubtitleMatchProps {
   /** The loaded local video file (hash cannot be computed for URLs). */
@@ -70,6 +86,7 @@ export function AutoSubtitleMatch({
   const [info, setInfo] = useState<string>('');
   const [queryInput, setQueryInput] = useState<string>('');
   const [lastGuess, setLastGuess] = useState<FilenameGuess | null>(null);
+  const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
 
   // Prefill the keyword box from the video filename (release tags stripped).
   useEffect(() => {
@@ -192,7 +209,9 @@ export function AutoSubtitleMatch({
     setLoadingId(c.id);
     try {
       const { link, remaining } = await downloadSubtitle(apiKey.trim(), c.fileId);
-      const cues: SubtitleCue[] = await fetchSubtitleCues(link);
+      // Keep the raw text so the subtitle can also be saved to disk.
+      const rawText = await fetchSubtitleText(link);
+      const cues: SubtitleCue[] = parseSubtitles(rawText);
       if (cues.length === 0) {
         throw new Error('下载的字幕内容无法解析。');
       }
@@ -205,9 +224,36 @@ export function AutoSubtitleMatch({
         cues,
       };
       onAddTrack(track);
+
+      // Save to the remembered resources folder when possible; otherwise
+      // park the file and let the user pick a folder once.
+      const base = (videoFile?.name ?? track.filename).replace(
+        /\.[a-z0-9]{1,5}$/i,
+        '',
+      );
+      const fname = `${base}.${lang === 'zh' ? 'zh' : 'en'}.srt`;
+      const pending: PendingSave = { filename: fname, text: rawText };
+      const dir = await getSavedDir();
+      let saveNote = '';
+      if (dir && (await ensureDirPermission(dir))) {
+        try {
+          await saveTextToDir(dir, fname, rawText);
+          saveNote = ` · 已保存到资源文件夹:${fname}`;
+        } catch {
+          setPendingSave(pending);
+          saveNote = ' · 自动保存失败,可点下方按钮手动保存';
+        }
+      } else if (canWriteToFolder()) {
+        setPendingSave(pending);
+        saveNote = ' · 点下方「保存到资源文件夹」落盘(选一次,之后自动保存)';
+      } else {
+        setPendingSave(pending);
+        saveNote = ' · 浏览器不支持写入文件夹,点下方按钮下载保存';
+      }
       setInfo(
         `已加载「${c.release || c.id}」(${cues.length} 条)` +
-          (remaining !== null ? ` · 剩余下载额度:${remaining}` : ''),
+          (remaining !== null ? ` · 剩余下载额度:${remaining}` : '') +
+          saveNote,
       );
     } catch (err) {
       const msg = (err as Error).message;
@@ -216,6 +262,31 @@ export function AutoSubtitleMatch({
       );
     } finally {
       setLoadingId(null);
+    }
+  };
+
+  /** Save the pending subtitle into the (newly picked) resources folder. */
+  const handleSaveToFolder = async (): Promise<void> => {
+    if (!pendingSave) return;
+    setError('');
+    try {
+      let dir = await getSavedDir();
+      if (!dir || !(await ensureDirPermission(dir))) {
+        dir = await pickResourcesDir();
+      }
+      if (!dir) {
+        // API unavailable or user cancelled → plain download fallback.
+        downloadTextFile(pendingSave.filename, pendingSave.text);
+        setInfo(`已通过浏览器下载保存:${pendingSave.filename}(在“下载”文件夹里)`);
+        setPendingSave(null);
+        return;
+      }
+      await saveTextToDir(dir, pendingSave.filename, pendingSave.text);
+      setInfo(`已保存到资源文件夹:${pendingSave.filename} · 之后自动保存到此文件夹`);
+      setPendingSave(null);
+    } catch (err) {
+      // User cancelled the folder picker — keep the pending save.
+      setError(`保存未完成:${(err as Error).message}`);
     }
   };
 
@@ -311,6 +382,23 @@ export function AutoSubtitleMatch({
         >
           {error || info}
         </Typography>
+      )}
+
+      {/* Save-to-disk action for the freshly downloaded subtitle. */}
+      {pendingSave && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<SaveAltIcon />}
+            onClick={() => void handleSaveToFolder()}
+          >
+            💾 保存到资源文件夹
+          </Button>
+          <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
+            {pendingSave.filename}
+          </Typography>
+        </Stack>
       )}
 
       {/* HTTP status legend — always visible so failures are self-explanatory. */}
