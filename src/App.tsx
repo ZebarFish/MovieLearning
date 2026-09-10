@@ -184,7 +184,11 @@ export default function App(): JSX.Element {
 
   const handleAddTrackFromFile = useCallback((track: SubtitleTrack): void => {
     setTracks((prev) => {
-      const filtered = prev.filter((p) => p.id !== track.id);
+      // Replace same-id OR same-lang tracks: re-loading a file (or loading
+      // another subtitle of the same language) must not stack duplicates.
+      const filtered = prev.filter(
+        (p) => p.id !== track.id && p.lang !== track.lang,
+      );
       return [...filtered, track];
     });
   }, []);

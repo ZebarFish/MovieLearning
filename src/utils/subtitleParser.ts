@@ -41,6 +41,18 @@ export function detectFormat(content: string): 'srt' | 'vtt' | 'unknown' {
 }
 
 /**
+ * Strip inline markup from cue text: SRT/VTT often carry `<i>`, `<b>`,
+ * `<font ...>`, VTT voice tags `<v Name>` and ASS override blocks
+ * like `{\an8}`. Display and dictation want the plain text only.
+ */
+export function cleanCueText(raw: string): string {
+  return raw
+    .replace(/\{\\[^}]*\}/g, '') // ASS override blocks, e.g. {\an8}
+    .replace(/<[^>]+>/g, '') // HTML-ish tags, e.g. <i>, </i>, <v Name>
+    .trim();
+}
+
+/**
  * Parse the given subtitle content into a list of cues. Auto-detects format.
  * If format detection fails, falls back to SRT-like parsing because SRT and
  * VTT share enough structure for the basic parser to recover gracefully.
@@ -84,7 +96,7 @@ export function parseSubtitles(content: string): SubtitleCue[] {
     const end = parseTimestamp(match[2]);
 
     const textLines = lines.slice(timeLineIdx + 1);
-    const text = textLines.join('\n').trim();
+    const text = cleanCueText(textLines.join('\n').trim());
     if (!text) {
       continue;
     }

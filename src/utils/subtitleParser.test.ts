@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cleanCueText,
   detectFormat,
   findCueAtTime,
   formatTime,
   parseSubtitles,
 } from './subtitleParser';
+
+describe('cleanCueText', () => {
+  it('strips inline HTML tags', () => {
+    expect(cleanCueText('<i>Hello world.</i>')).toBe('Hello world.');
+    expect(cleanCueText('<b>Hi</b> <font color="#fff">there</font>')).toBe(
+      'Hi there',
+    );
+  });
+
+  it('strips VTT voice tags and ASS overrides', () => {
+    expect(cleanCueText('<v Tom>Hi there.')).toBe('Hi there.');
+    expect(cleanCueText('{\\an8}Bottom line.')).toBe('Bottom line.');
+  });
+
+  it('keeps plain text untouched', () => {
+    expect(cleanCueText('Just plain text.')).toBe('Just plain text.');
+  });
+});
 
 describe('detectFormat', () => {
   it('detects VTT when first line starts with WEBVTT', () => {
