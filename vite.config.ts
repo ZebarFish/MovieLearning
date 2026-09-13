@@ -32,6 +32,9 @@ export default defineConfig({
     proxy: DICT_PROXY,
   },
   preview: {
+    port: 5180,
+    strictPort: true,
+    open: true,
     proxy: DICT_PROXY,
   },
 });

@@ -5,7 +5,14 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "strict": true
+    "strict": true,
+    // `tsc -b` writes build output next to the sources by default, which
+    // dropped a compiled vite.config.js at the repo root. Vite prefers
+    // `.js` over `.ts`, so that stray file silently shadowed the real
+    // config and broke startup ("No matching HTML proxy module").
+    // Keep every build artifact out of the repo tree.
+    "outDir": "./node_modules/.tmp/tsconfig.node",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo"
   },
   "include": ["vite.config.ts"]
 }

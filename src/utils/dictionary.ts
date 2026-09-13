@@ -54,18 +54,32 @@ export function clearDictionaryCache(): void {
 }
 
 /**
- * In dev (and `vite preview`) the Vite server proxies /dict/* to the
- * external APIs server-side — no CORS, no browser-specific network
- * quirks. In tests (VITEST) and production builds, call the absolute
- * URLs directly.
+ * Both the dev server (`vite`) and the local preview server
+ * (`vite preview`) proxy /dict/* to the external APIs server-side — no
+ * CORS, no CN-network flakiness. Outside those servers (tests, a build
+ * deployed to a real host) the absolute URLs are used directly.
+ *
+ * Detection is runtime-based: `import.meta.env.DEV` is false inside a
+ * production build, so relying on it alone would silently disable the
+ * proxy for the built app served by `vite preview`.
  */
-const DICT_API = import.meta.env.DEV && !import.meta.env.VITEST
+const IS_TEST = Boolean(import.meta.env.VITEST);
+
+/** True when the page is served from this machine's Vite server. */
+const SERVED_LOCALLY =
+  typeof window !== 'undefined' &&
+  /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/.test(window.location.hostname);
+
+const USE_PROXY =
+  !IS_TEST && (Boolean(import.meta.env.DEV) || SERVED_LOCALLY);
+
+const DICT_API = USE_PROXY
   ? '/dict/api/v2/entries/en'
   : 'https://api.dictionaryapi.dev/api/v2/entries/en';
-const YOUDAO = import.meta.env.DEV && !import.meta.env.VITEST
+const YOUDAO = USE_PROXY
   ? '/dict/youdao/jsonresult'
   : 'https://dict.youdao.com/jsonresult';
-const DATAMUSE = import.meta.env.DEV && !import.meta.env.VITEST
+const DATAMUSE = USE_PROXY
   ? '/dict/datamuse/words'
   : 'https://api.datamuse.com/words';
 

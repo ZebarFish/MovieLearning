@@ -27,12 +27,35 @@ American TV shows, built around the workflow:
 
 ## Getting started
 
+### Quick start (Windows, one click)
+
+Double-click **`start.bat`** in the project root. It automatically
+
+1. checks for Node.js,
+2. installs dependencies on the first run,
+3. builds the app if `dist/` is missing,
+4. starts the local server and opens your browser.
+
+Keep the console window open while you use the app — closing it stops the
+server.
+
+### Manual
+
 ```bash
 npm install
-npm run dev
+npm run dev      # dev server        → http://localhost:5173
+npm run build    # type-check + production bundle into dist/
+npm run start    # serve the build   → http://localhost:5180
+npm run clean    # remove stray build artifacts and the Vite cache
 ```
 
-Open http://localhost:5173 and:
+> Dictionary lookups (dictionaryapi.dev / Youdao / Datamuse) are routed
+> through Vite's server-side proxy (`/dict/*`, see `vite.config.ts`) while
+> the app is served from `localhost` — the browser cannot call those APIs
+> directly because of CORS. Anywhere else it falls back to calling them
+> directly.
+
+Open the app and:
 
 1. Pick a video file or paste a video URL.
 2. Load a matching `.srt` or `.vtt` subtitle file.
@@ -68,7 +91,8 @@ src/
 
 - Translations in the Anki export are intentionally left blank — the user
   fills them in once inside Anki so they engage in active recall.
-- The subtitle parser handles standard SRT/VTT but does not strip inline
-  styling tags (`<i>`, `<b>`) from a few non-standard sources.
+- The subtitle parser handles standard SRT/VTT and strips inline styling
+  tags (`<i>`, `<b>`, `<font>`, ASS `{\...}` overrides). Styled ASS/SSA
+  files are not supported.
 - Anki import requires the user to manually map columns (Front / Back /
   Extra) the first time.

@@ -6,6 +6,7 @@
   "description": "Learn English through American TV shows with A-B loop, vocabulary collection, and Anki export.",
   "scripts": {
     "dev": "vite",
+    "start": "vite preview",
     "clean": "node -e \"const fs=require('fs');['vite.config.js','vite.config.d.ts','tsconfig.tsbuildinfo','tsconfig.node.tsbuildinfo','node_modules/.vite'].forEach(p=>{fs.rmSync(p,{recursive:true,force:true})});console.log('cleaned: stray build artifacts + vite cache')\"",
     "dev:clean": "npm run clean && vite",
     "build": "tsc -b && vite build",

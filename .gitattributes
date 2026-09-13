@@ -1,0 +1,4 @@
+# Windows launchers must be checked out with CRLF line endings —
+# cmd.exe can mis-parse LF-only .bat files (goto/label handling).
+*.bat text eol=crlf
+*.cmd text eol=crlf
