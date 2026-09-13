@@ -23,7 +23,7 @@ import {
 import CloseIcon from '@mui/icons-material/Close';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import type { SubtitleLang } from '../types';
-import { lookupWord, type WordDefinition } from '../utils/dictionary';
+import { formatDefinition, lookupWord, type WordDefinition } from '../utils/dictionary';
 import { speak } from '../utils/tts';
 
 interface WordDetailCardProps {
@@ -32,7 +32,8 @@ interface WordDetailCardProps {
   lang: SubtitleLang;
   isCollected: boolean;
   onClose: () => void;
-  onCollect: () => void;
+  /** `definition` is the 单词释义 shown here, so the card it creates keeps it. */
+  onCollect: (definition?: string) => void;
   onUncollect: () => void;
 }
 
@@ -64,6 +65,12 @@ export function WordDetailCard({
 
   const handleSpeak = (): void => {
     speak(word, { lang: 'en-US', rate: 0.85 });
+  };
+
+  // Hand the definition we already fetched to the vocabulary entry, so the
+  // Anki card's 单词释义 field is populated without a second lookup.
+  const handleCollect = (): void => {
+    onCollect(def ? formatDefinition(def) || undefined : undefined);
   };
 
   return (
@@ -196,7 +203,7 @@ export function WordDetailCard({
             <Button
               variant="outlined"
               size="small"
-              onClick={isCollected ? onUncollect : onCollect}
+              onClick={isCollected ? onUncollect : handleCollect}
               color={isCollected ? 'secondary' : 'primary'}
             >
               {isCollected ? '⭐ 已收藏' : '☆ 收藏'}

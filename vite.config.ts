@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Dictionary API proxies. Browser-side requests to external dictionary
+// Dictionary + translation API proxies. Browser-side requests to external
 // services suffer from CORS blocks and unstable direct connectivity (CN
-// networks); routing them through the dev server fixes both. The client
-// (src/utils/dictionary.ts) prefixes these paths in dev mode.
+// networks); routing them through the dev server fixes both. The clients
+// (src/utils/dictionary.ts, src/utils/translate.ts) prefix these paths
+// whenever the app is served from localhost.
 const DICT_PROXY = {
   '/dict/api': {
     target: 'https://api.dictionaryapi.dev',
@@ -20,6 +21,12 @@ const DICT_PROXY = {
     target: 'https://api.datamuse.com',
     changeOrigin: true,
     rewrite: (p: string) => p.replace(/^\/dict\/datamuse/, ''),
+  },
+  // Sentence translation for the Anki card's 例句释义 field.
+  '/dict/mymemory': {
+    target: 'https://api.mymemory.translated.net',
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/dict\/mymemory/, ''),
   },
 };
 

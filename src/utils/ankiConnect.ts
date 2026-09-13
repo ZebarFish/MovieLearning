@@ -15,6 +15,19 @@
  */
 import type { VocabWord } from '../types';
 import { formatTime } from './subtitleParser';
+import {
+  ANKI_CSS,
+  ANKI_FIELDS,
+  ANKI_MODEL_NAME,
+  CARD_NAME,
+  FIELD_DEFINITION,
+  FIELD_SENTENCE,
+  FIELD_TRANSLATION,
+  FIELD_WORD,
+  TTS_EXPRESSION,
+  buildAnkiModelPayload,
+  buildCardTemplates,
+} from './ankiTemplate';
 
 export const ANKI_CONNECT_URL = 'http://127.0.0.1:8765';
 
@@ -141,11 +154,15 @@ async function getTaggedWords(): Promise<Set<string>> {
  * Words that exist only in OTHER decks are still added (Anki's global
  * per-note-type dedupe is bypassed via allowDuplicate: true).
  *
- * Note-type adaptation: field names are NOT hard-coded. Many collections
- * (especially Chinese-localized or imported ones) don't have a "Basic" model
- * with Front/Back. We read the model's real field names and use the first
- * field as the word, the second as the example sentence. addNotes results
- * are checked for real — nulls become failures with the reason surfaced.
+ * Note-type adaptation: the four card fields are written by NAME when the
+ * target model has them (our "听美剧学英语" template — see ankiTemplate.ts),
+ * and positionally otherwise, so a user's own note type still receives as
+ * much content as it can hold. addNotes results are checked for real —
+ * nulls become failures with the reason surfaced.
+ *
+ * Entries are expected to be enriched first (see vocabEnrich.ts) so that
+ * 单词释义 / 例句释义 are populated; missing values are written as empty
+ * strings rather than dropping the note.
  */
 export async function syncVocabToAnki(
   entries: VocabWord[],
@@ -157,7 +174,12 @@ export async function syncVocabToAnki(
     return { added: 0, duplicates: [], failed: [] };
   }
 
-  // 0) Validate deck & note type up front, with actionable errors.
+  // 0) Validate deck & note type up front, with actionable errors. Our own
+  //    template is created (or repaired) on demand so the sync can always
+  //    fill all four fields.
+  if (noteType === ANKI_MODEL_NAME) {
+    await ensureAnkiModel();
+  }
   const decks = await listAnkiDecks();
   if (!decks.includes(deck)) {
     throw new Error(
@@ -178,7 +200,6 @@ export async function syncVocabToAnki(
       `笔记类型「${noteType}」字段不足两个,无法存放单词和例句。`,
     );
   }
-  const [frontField, backField] = fields;
 
   // 1) Deck-scoped duplicate pre-check (search-free sources only).
   const syncedLocal = new Set(loadSyncedWords()[deck] ?? []);
@@ -201,10 +222,7 @@ export async function syncVocabToAnki(
     const notes = toAdd.map((e) => ({
       deckName: deck,
       modelName: noteType,
-      fields: {
-        [frontField]: e.surface,
-        [backField]: `${e.sentence}\n\n— ${e.video} · ${formatTime(e.time)}`,
-      },
+      fields: buildNoteFields(fields, e),
       options: { allowDuplicate: true },
       tags: ['听美剧学英语', e.video.replace(/[^\w-]+/g, '_')].filter(Boolean),
     }));
@@ -263,4 +281,150 @@ export async function listAnkiDecks(): Promise<string[]> {
 /** List available note type (model) names. */
 export async function listAnkiNoteTypes(): Promise<string[]> {
   return invoke<string[]>('modelNames');
+}
+
+/**
+ * Build the AnkiConnect `fields` object for one vocabulary entry.
+ *
+ * If the target model exposes all four of our field names we fill them
+ * exactly — that's our own template, where 例句 stays clean and the
+ * pronunciation comes from the card's `{{tts en_US:单词}}`.
+ *
+ * Any other note type is filled positionally (field 1 = 单词, field 2 =
+ * 单词释义, …) and, when it has fewer than four fields, the leftover content
+ * — plus the video/timestamp breadcrumb — is folded into the last field so
+ * nothing is silently lost.
+ */
+export function buildNoteFields(
+  fields: string[],
+  entry: VocabWord,
+): Record<string, string> {
+  const definition = entry.definition?.trim() ?? '';
+  const sentence = entry.sentence.trim();
+  const translation = entry.translation?.trim() ?? '';
+  const source = `${entry.video} · ${formatTime(entry.time)}`;
+
+  const mapped: Record<string, string> = {};
+
+  if (ANKI_FIELDS.every((f) => fields.includes(f))) {
+    mapped[FIELD_WORD] = entry.surface;
+    mapped[FIELD_DEFINITION] = definition;
+    mapped[FIELD_SENTENCE] = sentence;
+    mapped[FIELD_TRANSLATION] = translation;
+    return mapped;
+  }
+
+  const [first, second, third, fourth] = fields;
+  if (!first) return mapped;
+  mapped[first] = entry.surface;
+  const tail = [sentence, translation, source].filter(Boolean);
+
+  if (fields.length >= 4 && second && third && fourth) {
+    mapped[second] = definition;
+    mapped[third] = sentence;
+    mapped[fourth] = [translation, source].filter(Boolean).join('\n\n');
+  } else if (fields.length === 3 && second && third) {
+    mapped[second] = definition;
+    mapped[third] = tail.join('\n\n');
+  } else if (second) {
+    mapped[second] = [definition, ...tail].filter(Boolean).join('\n\n');
+  }
+
+  return mapped;
+}
+
+export interface AnkiModelStatus {
+  name: string;
+  /** True when the model had to be created from scratch. */
+  created: boolean;
+  /** Fields that were missing on an existing model and got added. */
+  addedFields: string[];
+  /** True when the card template / styling was (re)installed. */
+  templatesUpdated: boolean;
+  /** The model's field names after the operation. */
+  fields: string[];
+}
+
+/**
+ * Create the "听美剧学英语" note type, or repair an existing copy of it.
+ *
+ * Repairing is deliberately conservative: fields are only ADDED, and the
+ * card template is only rewritten when it is missing or no longer contains
+ * the pronunciation/definition expressions. A template the user has
+ * deliberately customised is left alone.
+ */
+export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
+  const models = await listAnkiNoteTypes();
+  if (!models.includes(ANKI_MODEL_NAME)) {
+    await invoke('createModel', buildAnkiModelPayload());
+    return {
+      name: ANKI_MODEL_NAME,
+      created: true,
+      addedFields: [],
+      templatesUpdated: true,
+      fields: [...ANKI_FIELDS],
+    };
+  }
+
+  const fields = await invoke<string[]>('modelFieldNames', {
+    modelName: ANKI_MODEL_NAME,
+  });
+  const addedFields: string[] = [];
+  for (const field of ANKI_FIELDS) {
+    if (!fields.includes(field)) {
+      await invoke('modelFieldAdd', {
+        modelName: ANKI_MODEL_NAME,
+        fieldName: field,
+        index: fields.length,
+      });
+      fields.push(field);
+      addedFields.push(field);
+    }
+  }
+
+  let templates: Record<string, { Front: string; Back: string }> = {};
+  try {
+    templates = await invoke<Record<string, { Front: string; Back: string }>>(
+      'modelTemplates',
+      { modelName: ANKI_MODEL_NAME },
+    );
+  } catch {
+    /* treat as "no usable template" and reinstall ours */
+  }
+
+  const ours = templates[CARD_NAME];
+  const templateStale =
+    !ours ||
+    !ours.Front.includes(TTS_EXPRESSION) ||
+    !ours.Back.includes(FIELD_TRANSLATION) ||
+    !ours.Back.includes(FIELD_DEFINITION);
+
+  let templatesUpdated = false;
+  if (templateStale) {
+    await invoke('updateModelTemplates', {
+      model: { name: ANKI_MODEL_NAME, templates: buildCardTemplates() },
+    });
+    templatesUpdated = true;
+  }
+
+  try {
+    const styling = await invoke<{ css?: string }>('modelStyling', {
+      modelName: ANKI_MODEL_NAME,
+    });
+    if (!styling?.css?.includes('.word')) {
+      await invoke('updateModelStyling', {
+        model: { name: ANKI_MODEL_NAME, css: ANKI_CSS },
+      });
+    }
+  } catch {
+    /* styling is cosmetic — never fail the sync over it */
+  }
+
+  return {
+    name: ANKI_MODEL_NAME,
+    created: false,
+    addedFields,
+    templatesUpdated,
+    fields,
+  };
 }

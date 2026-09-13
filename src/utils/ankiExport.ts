@@ -1,29 +1,53 @@
 /**
  * Anki export utility.
  *
- * Generates a tab-separated text file that Anki can import directly.
- * Each line is: `front\tback\t<TAGS>`
- * Where `extra` is the third column Anki displays below the back.
+ * Generates a tab-separated text file that Anki can import directly
+ * (File → Import). The columns line up 1:1 with the fields of the
+ * "听美剧学英语" note type created by ankiTemplate.ts, so the same content
+ * ends up on the card whether it was synced or imported:
  *
- * Layout per line:
- *   front = the English word
- *   back  = translation (left empty so the user can fill in via Anki)
- *   extra = sentence | video name | timestamp
+ *   单词 | 单词释义 | 例句 | 例句释义 | tags
+ *
+ * `#tags column:5` tells Anki the last column is tags. Values are
+ * HTML-escaped and newlines become <br>, so multi-line definitions survive
+ * the TSV round-trip without breaking the column layout.
  */
 import type { VocabWord } from '../types';
-import { formatTime } from './subtitleParser';
+
+/** Make a value safe for one TSV cell (no tabs/newlines, HTML escaped). */
+export function escapeCell(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r?\n/g, '<br>')
+    .replace(/\t/g, ' ')
+    .trim();
+}
+
+/** Tag applied to every exported/synced card. */
+export const EXPORT_TAG = '听美剧学英语';
 
 /** Build the raw Anki text content from a list of vocabulary entries. */
 export function buildAnkiText(entries: VocabWord[]): string {
-  return entries
-    .map((entry) => {
-      const front = entry.word;
-      // Back intentionally left empty - user will provide translations.
-      const back = '';
-      const extra = `${entry.sentence} | ${entry.video} | ${formatTime(entry.time)}`;
-      return `${front}\t${back}\t${extra}`;
-    })
-    .join('\n');
+  if (entries.length === 0) return '';
+
+  const directives = '#separator:tab\n#html:true\n#tags column:5\n\n';
+
+  const rows = entries.map((entry) => {
+    const tags = [EXPORT_TAG, entry.video.replace(/[^\w-]+/g, '_')]
+      .filter(Boolean)
+      .join(' ');
+    return [
+      escapeCell(entry.surface),
+      escapeCell(entry.definition ?? ''),
+      escapeCell(entry.sentence),
+      escapeCell(entry.translation ?? ''),
+      tags,
+    ].join('\t');
+  });
+
+  return directives + rows.join('\n');
 }
 
 /**

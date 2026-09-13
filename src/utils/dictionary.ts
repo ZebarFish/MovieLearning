@@ -3,8 +3,10 @@
  *
  * Lightweight wrapper around the free Dictionary API
  * (https://dictionaryapi.dev/) to fetch English word definitions and IPA.
- * No API key is required.
+ * No API key is required. Falls back to Youdao (Chinese definitions) and
+ * Datamuse (WordNet), and resolves inflected forms (chores → chore).
  */
+import { USE_LOCAL_PROXY } from './localProxy';
 
 export interface DictionaryMeaning {
   partOfSpeech: string;
@@ -58,28 +60,14 @@ export function clearDictionaryCache(): void {
  * (`vite preview`) proxy /dict/* to the external APIs server-side — no
  * CORS, no CN-network flakiness. Outside those servers (tests, a build
  * deployed to a real host) the absolute URLs are used directly.
- *
- * Detection is runtime-based: `import.meta.env.DEV` is false inside a
- * production build, so relying on it alone would silently disable the
- * proxy for the built app served by `vite preview`.
  */
-const IS_TEST = Boolean(import.meta.env.VITEST);
-
-/** True when the page is served from this machine's Vite server. */
-const SERVED_LOCALLY =
-  typeof window !== 'undefined' &&
-  /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/.test(window.location.hostname);
-
-const USE_PROXY =
-  !IS_TEST && (Boolean(import.meta.env.DEV) || SERVED_LOCALLY);
-
-const DICT_API = USE_PROXY
+const DICT_API = USE_LOCAL_PROXY
   ? '/dict/api/v2/entries/en'
   : 'https://api.dictionaryapi.dev/api/v2/entries/en';
-const YOUDAO = USE_PROXY
+const YOUDAO = USE_LOCAL_PROXY
   ? '/dict/youdao/jsonresult'
   : 'https://dict.youdao.com/jsonresult';
-const DATAMUSE = USE_PROXY
+const DATAMUSE = USE_LOCAL_PROXY
   ? '/dict/datamuse/words'
   : 'https://api.datamuse.com/words';
 
@@ -332,4 +320,29 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
     CACHE.set(cleaned, null);
     return null;
   }
+}
+
+/**
+ * Flatten a WordDefinition into the compact multi-line string we store in
+ * the vocabulary entry and push into Anki's 单词释义 field, e.g.
+ *
+ *   n. 日常杂务，家务活；苦差事
+ *   v. 做家务
+ *
+ * The part-of-speech label keeps its own trailing dot when it has one
+ * (Youdao returns "n." while dictionaryapi.dev returns "noun").
+ */
+export function formatDefinition(def: WordDefinition): string {
+  return def.meanings
+    .slice(0, 4)
+    .map((m) => {
+      const pos = m.partOfSpeech.trim();
+      const label = pos ? (pos.endsWith('.') ? `${pos} ` : `${pos}. `) : '';
+      const defs = m.definitions.slice(0, 3).filter(Boolean);
+      if (defs.length === 0) return '';
+      const sep = defs.some((d) => /[\u4e00-\u9fff]/.test(d)) ? '；' : '; ';
+      return `${label}${defs.join(sep)}`;
+    })
+    .filter(Boolean)
+    .join('\n');
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VocabWord } from '../types';
-import { buildAnkiText } from './ankiExport';
+import { buildAnkiText, escapeCell } from './ankiExport';
 
 function entry(over: Partial<VocabWord> = {}): VocabWord {
   return {
@@ -14,50 +14,65 @@ function entry(over: Partial<VocabWord> = {}): VocabWord {
   };
 }
 
+/** Data rows only (drop the `#…` directive lines and blanks). */
+function rows(text: string): string[][] {
+  return text
+    .split('\n')
+    .filter((line) => line && !line.startsWith('#'))
+    .map((line) => line.split('\t'));
+}
+
 describe('buildAnkiText', () => {
   it('returns empty string for empty input', () => {
     expect(buildAnkiText([])).toBe('');
   });
 
-  it('emits a single line with three tab-separated columns', () => {
+  it('emits a directive header that maps the five columns', () => {
     const text = buildAnkiText([entry()]);
-    const lines = text.split('\n');
-    expect(lines).toHaveLength(1);
-    const cols = lines[0].split('\t');
-    expect(cols).toHaveLength(3);
-    expect(cols[0]).toBe('hello');
-    expect(cols[1]).toBe(''); // back intentionally empty
-  });
-
-  it('orders fields as front<tab>back<tab>extra', () => {
-    const text = buildAnkiText([entry()]);
-    expect(text).toBe(
-      'hello\t\tHello, world! | episode-01.mp4 | 00:01:05',
+    expect(text.startsWith('#separator:tab\n#html:true\n#tags column:5\n\n')).toBe(
+      true,
     );
   });
 
-  it('joins multiple entries with newlines, one per row', () => {
+  it('emits the four card fields plus a tags column', () => {
     const text = buildAnkiText([
-      entry({ word: 'apple', sentence: 'I ate an apple' }),
-      entry({ word: 'banana', sentence: 'Bananas are yellow', time: 120 }),
+      entry({ definition: 'n. 你好', translation: '你好，世界！' }),
     ]);
-    const lines = text.split('\n');
-    expect(lines).toHaveLength(2);
-    expect(lines[0].startsWith('apple\t\t')).toBe(true);
-    expect(lines[1].startsWith('banana\t\t')).toBe(true);
-    // Each line is exactly 3 tab-separated fields
-    for (const line of lines) {
-      expect(line.split('\t')).toHaveLength(3);
-    }
+    expect(rows(text)).toEqual([
+      ['Hello', 'n. 你好', 'Hello, world!', '你好，世界！', '听美剧学英语 episode-01_mp4'],
+    ]);
   });
 
-  it('formats time in HH:MM:SS using formatTime', () => {
-    const text = buildAnkiText([entry({ time: 3725 })]); // 1h 2m 5s
-    expect(text).toContain('| 01:02:05');
+  it('leaves definition and translation empty when unknown', () => {
+    const [cols] = rows(buildAnkiText([entry()]));
+    expect(cols).toHaveLength(5);
+    expect(cols![1]).toBe('');
+    expect(cols![3]).toBe('');
   });
 
-  it('handles 0-second timestamp', () => {
-    const text = buildAnkiText([entry({ time: 0 })]);
-    expect(text).toContain('| 00:00:00');
+  it('joins multiple entries with newlines, one row each', () => {
+    const text = buildAnkiText([
+      entry({ word: 'apple', surface: 'apple' }),
+      entry({ word: 'banana', surface: 'banana' }),
+    ]);
+    const data = rows(text);
+    expect(data).toHaveLength(2);
+    expect(data[0]![0]).toBe('apple');
+    expect(data[1]![0]).toBe('banana');
+  });
+});
+
+describe('escapeCell', () => {
+  it('escapes HTML so definitions survive the import', () => {
+    expect(escapeCell('<b>a</b> & c')).toBe('&lt;b&gt;a&lt;/b&gt; &amp; c');
+  });
+
+  it('flattens newlines and tabs so the TSV layout is preserved', () => {
+    expect(escapeCell('n. 家务\nv. 做家务')).toBe('n. 家务<br>v. 做家务');
+    expect(escapeCell('a\tb')).toBe('a b');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(escapeCell('  hello  ')).toBe('hello');
   });
 });

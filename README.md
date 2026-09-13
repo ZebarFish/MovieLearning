@@ -14,10 +14,34 @@ American TV shows, built around the workflow:
   rehearsing a single line.
 - **Vocabulary collection**: click any English word inside a subtitle to add
   it (with sentence / video / timestamp) to your personal dictionary.
-- **Anki export**: one click downloads a tab-separated `.txt` file ready for
-  Anki import (front / back / extra fields).
+- **Anki one-click sync**: pushes cards straight into Anki through
+  AnkiConnect, using a dedicated note type this app creates for you
+  (see below). A tab-separated `.txt` export is available as a fallback.
 - **localStorage persistence**: your vocabulary survives page refreshes.
 - **Learning steps indicator**: 8-step progress strip at the top.
+
+## The Anki note type
+
+Syncing uses a note type called **听美剧学英语**, created/repaird automatically
+by the app (or via `npm run anki:template`). Each card has four fields:
+
+| Field | Content |
+| --- | --- |
+| 单词 | the English word |
+| 单词释义 | its definition (dictionary lookup: EN + Chinese) |
+| 例句 | the subtitle line the word was met in |
+| 例句释义 | that line's Chinese translation |
+
+Pronunciation is not a field — the card renders `{{tts en_US:单词}}`, so Anki
+speaks the word itself with its own English voice.
+
+Before pushing, the app fills in anything still missing: 单词释义 comes from
+the dictionary, and 例句释义 comes from the episode's **Chinese subtitle
+track** when one is loaded, otherwise from machine translation. Filled values
+are saved locally, so the lookup happens once per word.
+
+Already-synced words are skipped per deck, and if you pick a different note
+type the four values are mapped onto its fields positionally.
 
 ## Tech stack
 
@@ -47,6 +71,7 @@ npm run dev      # dev server        → http://localhost:5173
 npm run build    # type-check + production bundle into dist/
 npm run start    # serve the build   → http://localhost:5180
 npm run clean    # remove stray build artifacts and the Vite cache
+npm run anki:template   # create/repair the Anki note type from the terminal
 ```
 
 > Dictionary lookups (dictionaryapi.dev / Youdao / Datamuse) are routed
@@ -73,7 +98,13 @@ src/
   index.css                 Tailwind + subtitle-word styles
   utils/
     subtitleParser.ts       SRT/VTT parser, formatTime, findCueAtTime
-    ankiExport.ts           buildAnkiText + downloadAnkiExport
+    subtitleOffset.ts       Derived A/V sync offset for subtitle tracks
+    dictionary.ts           Word lookup (dictionaryapi.dev → Youdao → Datamuse)
+    vocabEnrich.ts          Fills 单词释义 / 例句释义 before an Anki sync
+    ankiTemplate.ts         The 听美剧学英语 note type (fields, card, TTS, CSS)
+    ankiConnect.ts          AnkiConnect client: model setup + note push
+    ankiExport.ts           Tab-separated .txt fallback export
+    localProxy.ts           When /dict/* requests are proxied by Vite
     abLoop.ts               Pure helpers for A-B marker state machine
   hooks/
     useVideoPlayer.ts       <video> ref, currentTime, seek, togglePlay
@@ -89,10 +120,13 @@ src/
 
 ## Known limitations
 
-- Translations in the Anki export are intentionally left blank — the user
-  fills them in once inside Anki so they engage in active recall.
+- 例句释义 falls back to machine translation (MyMemory, proxied) only when no
+  Chinese subtitle is loaded for the episode — the subtitle track is always
+  preferred because a human wrote it.
+- 单词释义 depends on the public dictionary APIs; obscure words may come back
+  empty and can be filled in inside Anki.
 - The subtitle parser handles standard SRT/VTT and strips inline styling
   tags (`<i>`, `<b>`, `<font>`, ASS `{\...}` overrides). Styled ASS/SSA
   files are not supported.
-- Anki import requires the user to manually map columns (Front / Back /
-  Extra) the first time.
+- Anki import of the exported `.txt` requires mapping the four columns
+  (单词 / 单词释义 / 例句 / 例句释义) the first time.

@@ -180,4 +180,81 @@ describe('useVocabulary', () => {
     expect(result.current.vocab).toHaveLength(1);
     expect(result.current.vocab[0].word).toBe('good');
   });
+
+  it('stores the definition / translation supplied at collection time', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({
+        word: 'chores',
+        sentence: 'I have to do the chores.',
+        video: 'v',
+        time: 5,
+        definition: 'n. 家务活',
+        translation: '我得做家务。',
+      });
+    });
+
+    const stored = result.current.vocab[0];
+    expect(stored.definition).toBe('n. 家务活');
+    expect(stored.translation).toBe('我得做家务。');
+    expect(readStorage()[0].translation).toBe('我得做家务。');
+  });
+
+  it('omits blank definition / translation rather than storing empty strings', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({
+        word: 'blank',
+        sentence: 's',
+        video: 'v',
+        time: 0,
+        definition: '   ',
+      });
+    });
+    expect(result.current.vocab[0].definition).toBeUndefined();
+    expect(result.current.vocab[0].translation).toBeUndefined();
+  });
+
+  it('updateWord merges enriched fields into an existing entry', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({ word: 'chores', sentence: 's', video: 'v', time: 5 });
+    });
+
+    const enriched = {
+      ...result.current.vocab[0],
+      definition: 'n. 家务活',
+      translation: '我得做家务。',
+    };
+    act(() => {
+      result.current.updateWord(enriched);
+    });
+
+    expect(result.current.vocab).toHaveLength(1);
+    expect(result.current.vocab[0].definition).toBe('n. 家务活');
+    expect(result.current.vocab[0].translation).toBe('我得做家务。');
+    expect(readStorage()[0].translation).toBe('我得做家务。');
+  });
+
+  it('updateWord is a no-op for unknown words', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({ word: 'known', sentence: 's', video: 'v', time: 0 });
+    });
+    const before = result.current.vocab;
+
+    act(() => {
+      result.current.updateWord({
+        word: 'unknown',
+        surface: 'unknown',
+        sentence: '',
+        video: '',
+        time: 0,
+        addedAt: 'x',
+        definition: 'nope',
+      });
+    });
+
+    expect(result.current.vocab).toBe(before);
+  });
 });

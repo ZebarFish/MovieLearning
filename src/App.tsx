@@ -149,7 +149,7 @@ export default function App(): JSX.Element {
     setPlaybackRate,
     playbackRate,
   } = useVideoPlayer();
-  const { vocab, addWord, removeWord, clearAll, hasWord } = useVocabulary();
+  const { vocab, addWord, updateWord, removeWord, clearAll, hasWord } = useVocabulary();
 
   const videoName = videoSource?.name ?? '';
   const study = useStudyProgress(videoName);
@@ -173,6 +173,13 @@ export default function App(): JSX.Element {
     if (displayMode === 'en' && en) return en;
     return en ?? playbackTracks[0];
   }, [playbackTracks, displayMode]);
+
+  // Chinese cues of the same episode — used to fill the Anki card's
+  // 例句释义 field with the subtitle the user actually watched.
+  const zhCues = useMemo(
+    () => playbackTracks.find((t) => t.lang === 'zh')?.cues,
+    [playbackTracks],
+  );
 
   const handleAddTrack = useCallback((track: SubtitleTrack): void => {
     setTracks((prev) => {
@@ -200,13 +207,19 @@ export default function App(): JSX.Element {
   );
 
   const handleAddToVocab = useCallback(
-    (word: string, sentence: string, lang: SubtitleLang): void => {
+    (
+      word: string,
+      sentence: string,
+      lang: SubtitleLang,
+      definition?: string,
+    ): void => {
       addWord({
         word,
         sentence,
         video: videoName,
         time: currentTime,
         lang,
+        definition,
       });
     },
     [addWord, currentTime, videoName],
@@ -687,11 +700,12 @@ export default function App(): JSX.Element {
           lang={selectedWord.lang}
           isCollected={isSelectedCollected}
           onClose={() => setSelectedWord(null)}
-          onCollect={() =>
+          onCollect={(definition) =>
             handleAddToVocab(
               selectedWord.word,
               selectedWord.sentence,
               selectedWord.lang,
+              definition,
             )
           }
           onUncollect={() => removeWord(selectedWord.word)}
@@ -704,6 +718,8 @@ export default function App(): JSX.Element {
         vocab={vocab}
         onRemove={removeWord}
         onClearAll={clearAll}
+        zhCues={zhCues}
+        onUpdateWord={updateWord}
       />
     </Box>
   );

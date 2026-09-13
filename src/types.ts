@@ -64,6 +64,17 @@ export interface VocabWord {
   addedAt: string;
   /** Which subtitle track the word was picked from (lang code). Optional. */
   lang?: SubtitleLang;
+  /**
+   * 单词释义 — definition of the word (part-of-speech prefixed). Filled from
+   * the dictionary when the word is collected, or backfilled before an Anki
+   * sync for entries collected before that.
+   */
+  definition?: string;
+  /**
+   * 例句释义 — Chinese translation of `sentence`. Taken from the Chinese
+   * subtitle track when one is loaded, otherwise machine-translated.
+   */
+  translation?: string;
 }
 
 /** A-B loop marker state. */

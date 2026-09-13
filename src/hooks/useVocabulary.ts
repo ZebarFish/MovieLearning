@@ -33,11 +33,17 @@ interface AddWordArgs {
   video: string;
   time: number;
   lang?: SubtitleLang;
+  /** 单词释义 — definition captured from the word detail card, if known. */
+  definition?: string;
+  /** 例句释义 — Chinese translation of `sentence`, if known. */
+  translation?: string;
 }
 
 interface UseVocabularyResult {
   vocab: VocabWord[];
   addWord: (args: AddWordArgs) => boolean;
+  /** Merge fields (definition / translation) into an entry already stored. */
+  updateWord: (patch: VocabWord) => void;
   removeWord: (word: string) => void;
   hasWord: (word: string) => boolean;
   clearAll: () => void;
@@ -89,7 +95,15 @@ export function useVocabulary(): UseVocabularyResult {
   );
 
   const addWord = useCallback(
-    ({ word, sentence, video, time, lang }: AddWordArgs): boolean => {
+    ({
+      word,
+      sentence,
+      video,
+      time,
+      lang,
+      definition,
+      translation,
+    }: AddWordArgs): boolean => {
       const cleaned = cleanSurface(word);
       if (!cleaned) {
         return false;
@@ -106,12 +120,27 @@ export function useVocabulary(): UseVocabularyResult {
         time,
         addedAt: new Date().toISOString(),
         lang,
+        ...(definition?.trim() ? { definition: definition.trim() } : {}),
+        ...(translation?.trim() ? { translation: translation.trim() } : {}),
       };
       setVocab((prev) => [entry, ...prev]);
       return true;
     },
     [vocab],
   );
+
+  const updateWord = useCallback((patch: VocabWord): void => {
+    const key = normalize(patch.word);
+    setVocab((prev) => {
+      const index = prev.findIndex((entry) => entry.word === key);
+      if (index === -1) {
+        return prev;
+      }
+      const next = [...prev];
+      next[index] = { ...prev[index], ...patch, word: key };
+      return next;
+    });
+  }, []);
 
   const removeWord = useCallback((word: string) => {
     const key = normalize(word);
@@ -123,7 +152,7 @@ export function useVocabulary(): UseVocabularyResult {
   }, []);
 
   return useMemo(
-    () => ({ vocab, addWord, removeWord, hasWord, clearAll }),
-    [vocab, addWord, removeWord, hasWord, clearAll],
+    () => ({ vocab, addWord, updateWord, removeWord, hasWord, clearAll }),
+    [vocab, addWord, updateWord, removeWord, hasWord, clearAll],
   );
 }
