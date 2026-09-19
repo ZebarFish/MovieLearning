@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 
+// The discovery view is mounted alongside the study stage, and it resolves
+// posters from Douban / TVmaze / iTunes. Tests must not touch the network.
+vi.mock('./utils/posters', () => ({
+  fetchPosterUrl: vi.fn(async () => null),
+  clearPosterCache: vi.fn(),
+}));
+
 // jsdom has no getUserMedia; mock it so the video element tests don't crash.
 Object.defineProperty(globalThis.navigator, 'mediaDevices', {
   writable: true,

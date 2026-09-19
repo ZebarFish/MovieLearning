@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 
+// The discovery view is mounted alongside the study stage and resolves posters
+// from Douban / TVmaze / iTunes; keep tests off the network.
+vi.mock('./utils/posters', () => ({
+  fetchPosterUrl: vi.fn(async () => null),
+  clearPosterCache: vi.fn(),
+}));
+
 const DEMO_SRT = `1
 00:00:00,000 --> 00:00:02,500
 Welcome to the listening practice demo.

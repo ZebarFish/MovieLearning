@@ -6,6 +6,12 @@
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "strict": true,
+    // `vite.config.ts` runs on Node 18+ but this project intentionally does not
+    // install `@types/node` (it is the only Node-side file). ES2020 + DOM gives
+    // it the globals it actually uses — Promise, fetch, URL, Uint8Array — with
+    // no extra dependency, and keeps Node globals out of the `src` typecheck.
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
     // `tsc -b` writes build output next to the sources by default, which
     // dropped a compiled vite.config.js at the repo root. Vite prefers
     // `.js` over `.ts`, so that stray file silently shadowed the real

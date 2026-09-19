@@ -2,17 +2,25 @@
  * MovieDiscover 测试
  *
  * 覆盖：首屏列表与计数、语言/题材筛选、搜索过滤、换一批、收藏写入
- * localStorage、以及无 TMDB Key 时的占位降级（无 <img>、不报错）。
+ * localStorage、海报解析成功时渲染 <img>、以及解析不到时的占位降级。
+ *
+ * 海报解析模块被 mock 掉 —— 真实实现会访问豆瓣 / TVmaze / iTunes，
+ * 测试里不应该发真实网络请求（既慢又不稳）。
  */
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MovieDiscover } from './MovieDiscover';
 import { MOVIE_CATALOG, CATALOG_LANGS } from '../data/movieCatalog';
 import { ALL_GENRES } from '../utils/movieRecommend';
+import { fetchPosterUrl } from '../utils/posters';
 import type { MovieEntry } from '../types';
 
+vi.mock('../utils/posters', () => ({
+  fetchPosterUrl: vi.fn(async () => null),
+  clearPosterCache: vi.fn(),
+}));
+
 const PREFS_KEY = 'letv.moviePrefs.v1';
-const TMDB_KEY = 'letv.tmdbApiKey';
 
 const byId = new Map<string, MovieEntry>(MOVIE_CATALOG.map((m) => [m.id, m]));
 
@@ -36,6 +44,9 @@ function matchesQuery(m: MovieEntry, q: string): boolean {
 
 beforeEach(() => {
   localStorage.clear();
+  // 默认：所有片子都解析不到海报 → 走占位块分支。
+  vi.mocked(fetchPosterUrl).mockReset();
+  vi.mocked(fetchPosterUrl).mockResolvedValue(null);
 });
 
 describe('MovieDiscover — 首屏渲染', () => {
@@ -155,17 +166,34 @@ describe('MovieDiscover — 收藏', () => {
   });
 });
 
-describe('MovieDiscover — 海报降级', () => {
-  it('renders placeholder (no <img>) and does not crash when there is no TMDB key', () => {
-    // 确保无 key
-    localStorage.removeItem(TMDB_KEY);
+describe('MovieDiscover — 海报', () => {
+  it('renders the resolved poster as an <img> for that card', async () => {
+    const target = MOVIE_CATALOG[0];
+    expect(target).toBeTruthy();
+    const url = 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg';
 
+    vi.mocked(fetchPosterUrl).mockImplementation(async (m) =>
+      m.id === target!.id ? url : null,
+    );
+
+    const { container } = render(<MovieDiscover />);
+
+    await waitFor(() => {
+      const img = container.querySelector('img');
+      expect(img).toBeTruthy();
+      expect(img?.getAttribute('src')).toBe(url);
+    });
+    // 只有解析成功的那一张是 <img>，其余仍是占位块。
+    expect(container.querySelectorAll('img').length).toBe(1);
+  });
+
+  it('falls back to a placeholder and does not crash when nothing resolves', async () => {
     const { container } = render(<MovieDiscover />);
     const firstId = gridIds()[0];
 
     // 占位块存在（海报区 data-testid）
     expect(screen.getByTestId(`movie-card-poster-${firstId}`)).toBeTruthy();
-    // 不应渲染任何 <img>（无海报直链）
+    // 不应渲染任何 <img>
     expect(container.querySelectorAll('img').length).toBe(0);
   });
 });

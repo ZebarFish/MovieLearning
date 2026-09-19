@@ -50,7 +50,7 @@ import {
   pickBatch,
   sortMovies,
 } from '../utils/movieRecommend';
-import { fetchPosterUrl, hasTmdbApiKey } from '../utils/tmdb';
+import { clearPosterCache, fetchPosterUrl } from '../utils/posters';
 import { useMoviePrefs } from '../hooks/useMoviePrefs';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { MovieCard } from './MovieCard';
@@ -63,6 +63,12 @@ interface MovieDiscoverProps {
 
 /** How many titles a single "换一批" batch surfaces. */
 const BATCH_SIZE = 12;
+
+/**
+ * Poster lookups run through a small worker pool. Fetching ~65 titles one at a
+ * time would take tens of seconds; an unbounded fan-out would hammer the APIs.
+ */
+const POSTER_CONCURRENCY = 6;
 
 const SORT_OPTIONS: { value: MovieSortKey; label: string }[] = [
   { value: 'match', label: '综合推荐' },
@@ -190,34 +196,53 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
     return sortMovies(filtered, sort, filter, prefs);
   }, [filtered, sort, batchSeed, filter, prefs]);
 
-  // --- Optional TMDB poster backfill (graceful, key-detected) ---------------
+  // --- Poster backfill (keyless; see src/utils/posters.ts) -------------------
   const [posterMap, setPosterMap] = useState<Record<string, string>>({});
-  const hasKey = hasTmdbApiKey();
+  const [posterLoading, setPosterLoading] = useState<boolean>(false);
+  /** Bumped by 「重新拉取海报」 to force a fresh pass after clearing the cache. */
+  const [posterReload, setPosterReload] = useState<number>(0);
+
   useEffect(() => {
-    if (!hasKey) {
-      setPosterMap({});
-      return;
-    }
     const controller = new AbortController();
     let cancelled = false;
+    setPosterLoading(true);
+
     (async () => {
       const next: Record<string, string> = {};
-      for (const m of list) {
-        if (m.tmdbId == null) continue;
-        try {
-          const url = await fetchPosterUrl(m.tmdbId, controller.signal);
-          if (url) next[m.id] = url;
-        } catch {
-          /* skip — placeholder shows instead */
-        }
+      // Shared cursor + N workers = the same set is covered exactly once.
+      // `cursor++` happens synchronously between awaits, so it is race-free.
+      let cursor = 0;
+      const workers = Array.from(
+        { length: Math.min(POSTER_CONCURRENCY, list.length) },
+        async () => {
+          for (;;) {
+            const i = cursor++;
+            if (i >= list.length) return;
+            const movie = list[i];
+            if (!movie) continue;
+            const url = await fetchPosterUrl(movie, controller.signal);
+            if (url) next[movie.id] = url;
+          }
+        },
+      );
+      await Promise.all(workers);
+      if (!cancelled) {
+        setPosterMap(next);
+        setPosterLoading(false);
       }
-      if (!cancelled) setPosterMap(next);
     })();
+
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [hasKey, list]);
+  }, [list, posterReload]);
+
+  const reloadPosters = (): void => {
+    clearPosterCache();
+    setPosterMap({});
+    setPosterReload((n) => n + 1);
+  };
 
   const handleHide = (movie: MovieEntry): void => {
     toggleHidden(movie.id);
@@ -432,6 +457,35 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
             fullWidth
             inputProps={{ 'data-testid': 'movie-search-input' }}
           />
+        </Stack>
+      </CollapsiblePanel>
+
+      {/* Poster status. Artwork is resolved automatically from keyless public
+          sources (Douban / TVmaze / iTunes) — no API key required. */}
+      <CollapsiblePanel
+        title="海报"
+        hint={
+          posterLoading
+            ? '正在补图…'
+            : `自动补图 · 已载入 ${Object.keys(posterMap).length}/${list.length} 张`
+        }
+      >
+        <Stack spacing={1}>
+          <Typography variant="caption" color="text.secondary">
+            海报会按片名从公开数据源（豆瓣 / TVmaze / iTunes）自动匹配，无需任何 API
+            Key。匹配不到的片子保留占位图。海报为第三方内容，仅在本机预览使用。
+          </Typography>
+          <Stack direction="row" spacing={1}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={reloadPosters}
+              disabled={posterLoading}
+              data-testid="poster-reload"
+            >
+              重新拉取海报
+            </Button>
+          </Stack>
         </Stack>
       </CollapsiblePanel>
 

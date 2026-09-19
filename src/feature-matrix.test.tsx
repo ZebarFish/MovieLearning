@@ -7,6 +7,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 const { downloadSpy } = vi.hoisted(() => ({ downloadSpy: vi.fn() }));
 import App from './App';
 
+// The discovery view is mounted alongside the study stage and resolves posters
+// from Douban / TVmaze / iTunes; keep tests off the network.
+vi.mock('./utils/posters', () => ({
+  fetchPosterUrl: vi.fn(async () => null),
+  clearPosterCache: vi.fn(),
+}));
+
 const SRT_SAMPLE = `1
 00:00:00,000 --> 00:00:02,500
 Hello world this is a test.

@@ -2,9 +2,12 @@
  * tmdb.test.ts
  *
  * Poster enrichment is optional and must never throw. We verify: no key →
- * hasTmdbApiKey() false and fetchPosterUrl() null; set/get round-trip; a
- * successful fetch returns a w342 URL; and the cache prevents a second network
- * request for the same id.
+ * hasTmdbApiKey() false and fetchPosterUrl() null; set/get round-trip; the
+ * movie-vs-TV namespace split (TMDB keeps them in separate id spaces); the
+ * title-search fallback for entries with no hard-coded id; cache behaviour
+ * (definitive answers cached, transient failures retryable, rejected keys not
+ * poisoning anything); and the error flag the UI uses to explain a wall of
+ * placeholders.
  *
  * `fetch` is stubbed per-test; the real network is never touched.
  */
@@ -13,16 +16,44 @@ import {
   TMDB_KEY_STORAGE,
   clearTmdbCache,
   fetchPosterUrl,
+  getLastPosterError,
   getTmdbApiKey,
   hasTmdbApiKey,
   setTmdbApiKey,
 } from './tmdb';
+import type { PosterQuery } from './tmdb';
 
-function okResponse(posterPath: string): Response {
+const MOVIE: PosterQuery = {
+  tmdbId: 550,
+  mediaType: 'movie',
+  title: 'Fight Club',
+  year: 1999,
+};
+
+function jsonResponse(posterPath: string | null, status = 200): Response {
   return {
-    ok: true,
+    ok: status >= 200 && status < 300,
+    status,
     json: async () => ({ poster_path: posterPath }),
   } as unknown as Response;
+}
+
+function searchResponse(entries: Array<{ p: string | null; d?: string }>): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      results: entries.map((e) => ({
+        poster_path: e.p,
+        release_date: e.d,
+        first_air_date: e.d,
+      })),
+    }),
+  } as unknown as Response;
+}
+
+function requestedUrl(call: unknown): string {
+  return String(call);
 }
 
 afterEach(() => {
@@ -35,82 +66,234 @@ describe('api key handling', () => {
   it('reports no key and returns null without one', async () => {
     expect(hasTmdbApiKey()).toBe(false);
     expect(getTmdbApiKey()).toBe('');
-    expect(await fetchPosterUrl(123)).toBeNull();
+    expect(await fetchPosterUrl(MOVIE)).toBeNull();
   });
 
   it('set/get round-trips through localStorage', () => {
     setTmdbApiKey('abc123');
     expect(getTmdbApiKey()).toBe('abc123');
     expect(hasTmdbApiKey()).toBe(true);
+    expect(localStorage.getItem(TMDB_KEY_STORAGE)).toBe('abc123');
   });
 
-  it('returns null for an invalid id even with a key', async () => {
+  it('drops the poster cache when the key changes', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse('/a.jpg'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    setTmdbApiKey('first');
+    await fetchPosterUrl(MOVIE);
+    await fetchPosterUrl(MOVIE); // served from cache
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    setTmdbApiKey('second'); // must invalidate
+    await fetchPosterUrl(MOVIE);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a query with neither id nor title', async () => {
     setTmdbApiKey('k');
-    expect(await fetchPosterUrl(NaN)).toBeNull();
-    expect(await fetchPosterUrl(Infinity)).toBeNull();
+    expect(await fetchPosterUrl({ mediaType: 'movie', title: '   ' })).toBeNull();
+  });
+
+  it('ignores a non-finite id when there is no title either', async () => {
+    setTmdbApiKey('k');
+    expect(
+      await fetchPosterUrl({ tmdbId: NaN, mediaType: 'movie', title: '' }),
+    ).toBeNull();
   });
 });
 
-describe('fetchPosterUrl', () => {
-  it('returns a w342 image URL on success', async () => {
+describe('namespace: movies vs TV', () => {
+  it('uses /movie/<id> for films', async () => {
     setTmdbApiKey('k');
-    const fetchMock = vi.fn(async () => okResponse('/abc.jpg'));
+    const fetchMock = vi.fn(async () => jsonResponse('/film.jpg'));
     vi.stubGlobal('fetch', fetchMock);
 
-    const url = await fetchPosterUrl(550);
-    expect(url).toBe('https://image.tmdb.org/t/p/w342/abc.jpg');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    // request was routed to the absolute API host (USE_LOCAL_PROXY is false in tests)
-    const firstCall = ((fetchMock.mock.calls as unknown as unknown[][])[0])?.[0];
-    expect(typeof firstCall === 'string' && firstCall).toContain(
-      'api.themoviedb.org/3/movie/550',
+    const url = await fetchPosterUrl(MOVIE);
+    expect(url).toBe('https://image.tmdb.org/t/p/w342/film.jpg');
+    expect(requestedUrl((fetchMock.mock.calls[0] as unknown[])[0])).toContain(
+      '/movie/550',
     );
   });
 
-  it('returns null on a non-200 response', async () => {
+  it('uses /tv/<id> for series', async () => {
     setTmdbApiKey('k');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: false, json: async () => ({}) }) as unknown as Response),
+    const fetchMock = vi.fn(async () => jsonResponse('/tv.jpg'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Friends (1668) is a TV show — hitting /movie/1668 would return an
+    // unrelated film, which is exactly the bug this test locks down.
+    const url = await fetchPosterUrl({
+      tmdbId: 1668,
+      mediaType: 'series',
+      title: 'Friends',
+      year: 1994,
+    });
+    expect(url).toBe('https://image.tmdb.org/t/p/w342/tv.jpg');
+    expect(requestedUrl((fetchMock.mock.calls[0] as unknown[])[0])).toContain(
+      '/tv/1668',
     );
-    expect(await fetchPosterUrl(550)).toBeNull();
+  });
+});
+
+describe('title-search fallback', () => {
+  it('searches when the entry has no tmdbId', async () => {
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () => searchResponse([{ p: '/found.jpg' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await fetchPosterUrl({
+      mediaType: 'series',
+      title: 'Some Show',
+      year: 2010,
+    });
+    expect(url).toBe('https://image.tmdb.org/t/p/w342/found.jpg');
+
+    const called = requestedUrl((fetchMock.mock.calls[0] as unknown[])[0]);
+    expect(called).toContain('/search/tv');
+    expect(called).toContain('query=Some%20Show');
+    expect(called).toContain('year=2010');
   });
 
-  it('returns null on a network error (never throws)', async () => {
+  it('falls back to search when the known id 404s', async () => {
     setTmdbApiKey('k');
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      throw new Error('network down');
-    }));
-    await expect(fetchPosterUrl(550)).resolves.toBeNull();
+    const fetchMock = vi.fn(async (url: unknown) =>
+      String(url).includes('/search/')
+        ? searchResponse([{ p: '/via-search.jpg' }])
+        : jsonResponse(null, 404),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await fetchPosterUrl(MOVIE);
+    expect(url).toBe('https://image.tmdb.org/t/p/w342/via-search.jpg');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefers a search hit released near the catalog year', async () => {
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () =>
+      searchResponse([
+        { p: '/old.jpg', d: '1930-01-01' },
+        { p: '/right.jpg', d: '1999-10-15' },
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await fetchPosterUrl({
+      mediaType: 'movie',
+      title: 'Fight Club',
+      year: 1999,
+    });
+    expect(url).toBe('https://image.tmdb.org/t/p/w342/right.jpg');
+  });
+
+  it('skips search hits without artwork', async () => {
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () =>
+      searchResponse([{ p: null }, { p: '/second.jpg' }]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await fetchPosterUrl({ mediaType: 'movie', title: 'Whatever' });
+    expect(url).toBe('https://image.tmdb.org/t/p/w342/second.jpg');
+  });
+});
+
+describe('failure handling', () => {
+  it('returns null on a server error', async () => {
+    setTmdbApiKey('k');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null, 500)));
+    expect(await fetchPosterUrl(MOVIE)).toBeNull();
   });
 
   it('returns null when poster_path is missing', async () => {
     setTmdbApiKey('k');
-    vi.stubGlobal('fetch', vi.fn(async () => okResponse('')));
-    expect(await fetchPosterUrl(550)).toBeNull();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null)));
+    expect(await fetchPosterUrl(MOVIE)).toBeNull();
   });
 
-  it('caches the result so the network is hit only once', async () => {
+  it('never throws on a network error and reports it', async () => {
     setTmdbApiKey('k');
-    const fetchMock = vi.fn(async () => okResponse('/cached.jpg'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    );
+    await expect(fetchPosterUrl(MOVIE)).resolves.toBeNull();
+    expect(getLastPosterError()).toBe('network');
+  });
+
+  it('flags a rejected key and does not cache the failure', async () => {
+    setTmdbApiKey('bad');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null, 401)));
+
+    expect(await fetchPosterUrl(MOVIE)).toBeNull();
+    expect(getLastPosterError()).toBe('auth');
+
+    // Nothing was cached, so a corrected key still resolves the same entry.
+    setTmdbApiKey('good');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse('/ok.jpg')));
+    expect(await fetchPosterUrl(MOVIE)).toBe(
+      'https://image.tmdb.org/t/p/w342/ok.jpg',
+    );
+  });
+
+  it('does not cache a transient network failure', async () => {
+    setTmdbApiKey('k');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('offline');
+      }),
+    );
+    await fetchPosterUrl(MOVIE);
+
+    const fetchMock = vi.fn(async () => jsonResponse('/recovered.jpg'));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await fetchPosterUrl(MOVIE)).toBe(
+      'https://image.tmdb.org/t/p/w342/recovered.jpg',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('caching', () => {
+  it('hits the network only once per entry', async () => {
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () => jsonResponse('/cached.jpg'));
     vi.stubGlobal('fetch', fetchMock);
 
-    const first = await fetchPosterUrl(999);
-    const second = await fetchPosterUrl(999);
+    const first = await fetchPosterUrl(MOVIE);
+    const second = await fetchPosterUrl(MOVIE);
     expect(first).toBe('https://image.tmdb.org/t/p/w342/cached.jpg');
     expect(second).toBe(first);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('persists the cache across clearTmdbCache calls in memory? (memory cleared, localStorage kept)', async () => {
+  it('keeps a movie and a series sharing the same numeric id apart', async () => {
     setTmdbApiKey('k');
-    const fetchMock = vi.fn(async () => okResponse('/persist.jpg'));
+    const fetchMock = vi.fn(async (url: unknown) =>
+      jsonResponse(String(url).includes('/tv/') ? '/tv.jpg' : '/movie.jpg'),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
-    await fetchPosterUrl(111);
-    clearTmdbCache(); // wipes memory + localStorage poster cache
-    // After clearing, a fresh fetch is required.
-    const again = await fetchPosterUrl(111);
+    const asMovie = await fetchPosterUrl({ tmdbId: 42, mediaType: 'movie', title: 'X' });
+    const asSeries = await fetchPosterUrl({ tmdbId: 42, mediaType: 'series', title: 'X' });
+
+    expect(asMovie).toBe('https://image.tmdb.org/t/p/w342/movie.jpg');
+    expect(asSeries).toBe('https://image.tmdb.org/t/p/w342/tv.jpg');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-fetches after clearTmdbCache', async () => {
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () => jsonResponse('/persist.jpg'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchPosterUrl(MOVIE);
+    clearTmdbCache();
+    const again = await fetchPosterUrl(MOVIE);
     expect(again).toBe('https://image.tmdb.org/t/p/w342/persist.jpg');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
