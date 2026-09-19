@@ -35,6 +35,7 @@ import { AutoSubtitleMatch } from './components/AutoSubtitleMatch';
 import { shiftTracks } from './utils/subtitleOffset';
 import { WordDetailCard } from './components/WordDetailCard';
 import { MovieDiscover } from './components/MovieDiscover';
+import { DownloadPanel } from './components/DownloadPanel';
 import { useVideoPlayer } from './hooks/useVideoPlayer';
 import { useVocabulary } from './hooks/useVocabulary';
 import { useStudyProgress } from './hooks/useStudyProgress';
@@ -57,7 +58,8 @@ import type {
   SubtitleTrack,
   VideoSource,
 } from './types';
-import { detectKind, MEDIA_FILE_INPUT_ATTR } from './utils/mediaFile';
+import { detectKind, mediaKindFromName, MEDIA_FILE_INPUT_ATTR } from './utils/mediaFile';
+import { downloadFileUrl, type DownloadTask } from './utils/downloader';
 
 const LEARNING_STEPS: LearningStep[] = [
   {
@@ -120,7 +122,7 @@ type DrawerKind = 'media' | 'steps' | null;
  * component and is preserved across the switch — we only swap which block of
  * JSX is rendered, never unmount the study stage's state.
  */
-type AppView = 'study' | 'discover';
+type AppView = 'study' | 'discover' | 'download';
 
 export default function App(): JSX.Element {
   const [view, setView] = useState<AppView>('study');
@@ -385,22 +387,42 @@ export default function App(): JSX.Element {
   const closeDrawer = (): void => setDrawer(null);
 
   /**
-   * Switch between the learning stage and the movie discovery view.
+   * Switch between the learning stage, the movie discovery view and the
+   * download centre.
    *
    * Leaving 'study' pauses playback and closes any open drawer. The media
    * element itself is NOT unmounted — the main stage is hidden with CSS
    * instead (see the main-stage comment below) — so the playback position
-   * survives the round trip to the discover view and back.
+   * survives the round trip to any other view and back.
    */
-  const handleToggleView = useCallback((): void => {
-    if (view === 'study') {
-      videoRef.current?.pause();
-      setDrawer(null);
-      setView('discover');
-    } else {
-      setView('study');
-    }
-  }, [view, videoRef]);
+  const goToView = useCallback(
+    (next: AppView): void => {
+      if (next === view) return;
+      if (next !== 'study') {
+        videoRef.current?.pause();
+        setDrawer(null);
+      }
+      setView(next);
+    },
+    [view, videoRef],
+  );
+
+  /**
+   * Hand a finished download to the study stage. The local download service
+   * serves the file back over http (with Range support, so seeking works), so
+   * it is indistinguishable from any other remote source as far as the player
+   * is concerned.
+   */
+  const handleUseDownloaded = useCallback((task: DownloadTask): void => {
+    setVideoSource({
+      src: downloadFileUrl(task.filename),
+      name: task.filename,
+      isRemote: true,
+      kind: mediaKindFromName(task.filename),
+    });
+    setDrawer(null);
+    setView('study');
+  }, []);
 
   // Main-stage CTA: open the native file picker directly (no drawer hop).
   const handleStageMediaFile = useCallback(
@@ -489,15 +511,36 @@ export default function App(): JSX.Element {
               </Badge>
             </>
           )}
-          {view === 'discover' && <Box sx={{ flexGrow: 1 }} />}
-          <Button
-            size="small"
-            variant={view === 'discover' ? 'contained' : 'outlined'}
-            onClick={handleToggleView}
-            data-testid={view === 'study' ? 'nav-discover' : 'nav-study'}
-          >
-            {view === 'study' ? '🎬 发现片单' : '📺 返回学习台'}
-          </Button>
+          {view !== 'study' && <Box sx={{ flexGrow: 1 }} />}
+          {view === 'study' ? (
+            <>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => goToView('discover')}
+                data-testid="nav-discover"
+              >
+                🎬 发现片单
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => goToView('download')}
+                data-testid="nav-download"
+              >
+                ⬇ 下载中心
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="small"
+              variant="contained"
+              onClick={() => goToView('study')}
+              data-testid="nav-study"
+            >
+              📺 返回学习台
+            </Button>
+          )}
         </Toolbar>
       </AppBar>
 
@@ -663,6 +706,10 @@ export default function App(): JSX.Element {
       {/* Full-screen movie discovery view. Sits alongside the (hidden) study
           stage rather than replacing it, so the <video> element survives. */}
       {view === 'discover' && <MovieDiscover />}
+
+      {/* Download centre. Same relationship to the study stage as the discover
+          view: the stage stays mounted (hidden) so playback survives. */}
+      {view === 'download' && <DownloadPanel onUseForStudy={handleUseDownloaded} />}
 
       {view === 'study' && (
       <>

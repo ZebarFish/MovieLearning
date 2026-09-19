@@ -44,6 +44,10 @@ coverage/
 # Misc
 *.local
 
+# Videos downloaded by the download centre (user content, often very large).
+# The directory carries its own .tasks.json manifest; neither belongs in git.
+downloads/
+
 # Local scratch files (probe output, captured build logs — never committed)
 .*.txt
 .preview.txt

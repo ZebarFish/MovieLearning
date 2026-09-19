@@ -11,13 +11,23 @@ export const AUDIO_FILE_INPUT_ATTR =
  *  file picker on every browser — we re-classify via detectKind() after. */
 export const MEDIA_FILE_INPUT_ATTR = `${VIDEO_FILE_INPUT_ATTR},${AUDIO_FILE_INPUT_ATTR}`;
 
+const AUDIO_EXT_RE = /\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/;
+
+/**
+ * Detect media kind from a filename. Defaults to 'video'.
+ *
+ * Also used for downloaded files, where there is no `File` object — only a
+ * name — so the extension list lives here rather than inside `detectKind`.
+ */
+export function mediaKindFromName(filename: string): 'video' | 'audio' {
+  return AUDIO_EXT_RE.test(filename.toLowerCase()) ? 'audio' : 'video';
+}
+
 /** Detect media kind from a File. Defaults to 'video'. */
 export function detectKind(file: File): 'video' | 'audio' {
   const mime = file.type.toLowerCase();
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('video/')) return 'video';
   // Fallback to extension when MIME is empty (some browsers).
-  const name = file.name.toLowerCase();
-  if (/\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/.test(name)) return 'audio';
-  return 'video';
+  return mediaKindFromName(file.name);
 }

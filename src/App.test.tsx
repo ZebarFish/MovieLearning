@@ -98,3 +98,26 @@ describe('App — discover view toggle', () => {
     expect(screen.getByTestId('study-stage')).toBeTruthy();
   });
 });
+
+describe('App — download view toggle', () => {
+  it('keeps the study stage mounted while the download centre is open', async () => {
+    render(<App />);
+    expect(screen.getByTestId('study-stage')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('nav-download'));
+
+    // The download centre is on screen …
+    expect(screen.getByTestId('download-panel')).toBeTruthy();
+
+    // … and the study stage is still in the document for the same reason as in
+    // the discover view: unmounting it would destroy the <video> and lose the
+    // playback position (see the discover-view test above).
+    expect(screen.getByTestId('study-stage')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('nav-study'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('download-panel')).toBeNull();
+    });
+    expect(screen.getByTestId('study-stage')).toBeTruthy();
+  });
+});

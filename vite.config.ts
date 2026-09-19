@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import type { Plugin, PreviewServer, ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
+import { registerDownloadService } from './server/downloader.mjs';
 
 // Dictionary + translation API proxies. Browser-side requests to external
 // services suffer from CORS blocks and unstable direct connectivity (CN
@@ -157,9 +158,30 @@ function posterImageProxy(): Plugin {
   };
 }
 
+/**
+ * The download centre (`/dl/*`).
+ *
+ * The transfer itself lives in `server/downloader.mjs` — it has to run here
+ * rather than in the page, because a browser tab cannot keep downloading after
+ * the user navigates away. Like the poster proxy it is registered on BOTH
+ * servers, so it works in `vite dev` and in the `vite preview` build that
+ * `start.bat` launches.
+ */
+function downloadService(): Plugin {
+  return {
+    name: 'download-service',
+    configureServer(server) {
+      registerDownloadService(server);
+    },
+    configurePreviewServer(server) {
+      registerDownloadService(server);
+    },
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), posterImageProxy()],
+  plugins: [react(), posterImageProxy(), downloadService()],
   server: {
     port: 5173,
     open: true,
