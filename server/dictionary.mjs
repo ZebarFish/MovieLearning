@@ -194,6 +194,41 @@ async function findRow(target) {
   return -1;
 }
 
+/**
+ * The lemma a record inflects from, read out of ECDICT's `exchange` field.
+ * That field is `type:word` segments joined by `/`; the segment `0:<word>`
+ * means "this entry is a form of <word>" — e.g. `discovered` is
+ * `0:discover/1:pd`, `went` is `0:go/1:p`. Returns '' when there is none
+ * (a base form like `discover` only lists its own inflections).
+ */
+function lemmaOf(exchange) {
+  for (const part of String(exchange ?? '').split('/')) {
+    if (part.startsWith('0:')) {
+      const lemma = part.slice(2).trim().toLowerCase();
+      if (lemma) return lemma;
+    }
+  }
+  return '';
+}
+
+/**
+ * The IPA for a record. ECDICT auto-generated most inflected entries and
+ * left their `phonetic` empty — `discovered` has none, while the `discover`
+ * it comes from is `dis'kʌvə`. So when a record has no phonetic of its own
+ * we borrow the lemma's, which is what a learner wants to see anyway (it is
+ * the pronunciation of the whole word family).
+ */
+async function phoneticFor(fields) {
+  const own = fields[1] ?? '';
+  if (own) return own;
+  const lemma = lemmaOf(fields[10]);
+  if (!lemma) return '';
+  const row = await findRow(lemma);
+  if (row < 0) return '';
+  const lemmaFields = parseCsvLine(await readFullLine(row));
+  return lemmaFields[1] ?? '';
+}
+
 async function handle(req, res, next) {
   const parsed = new URL(String(req.url ?? ''), 'http://localhost');
   // NOTE: connect strips the mount prefix (`/dict`) from `req.url`, so what we
@@ -230,7 +265,7 @@ async function handle(req, res, next) {
     const fields = parseCsvLine(await readFullLine(idx));
     sendJson(res, 200, {
       word: fields[0] ?? '',
-      phonetic: fields[1] ?? '',
+      phonetic: await phoneticFor(fields),
       translation: fields[3] ?? '',
       definition: fields[2] ?? '',
       pos: fields[4] ?? '',
