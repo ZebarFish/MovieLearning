@@ -72,8 +72,8 @@ interface MovieDiscoverProps {
 const BATCH_SIZE = 12;
 
 /**
- * Poster lookups run through a small worker pool. Fetching ~65 titles one at a
- * time would take tens of seconds; an unbounded fan-out would hammer the APIs.
+ * Poster lookups run through a small worker pool. Fetching the whole catalog one
+ * at a time would take tens of seconds; an unbounded fan-out would hammer the APIs.
  * Douban additionally paces its own requests internally.
  */
 const POSTER_CONCURRENCY = 6;
@@ -545,7 +545,7 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
           </Stack>
 
           <Typography variant="caption" color="text.secondary" sx={{ pt: 0.5 }}>
-            如果想要更全、更准的海报，可填一个 TMDB API Key（有 Key 时优先走 TMDB）。
+            如果想要更全、更准的海报，可填一个 TMDB 凭据（有凭据时优先走 TMDB）。
             Key 只保存在本机浏览器，不会上传到任何服务器。可到{' '}
             <Link
               href={TMDB_SIGNUP_URL}
@@ -555,8 +555,8 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
             >
               themoviedb.org
             </Link>{' '}
-            免费申请。注意要复制「API Key (v3 auth)」那一栏，不要复制「API Read Access
-            Token (v4 auth)」——本应用用的是前者。国内网络通常需要代理才能访问。
+            免费申请。申请页上「API Key」和「API Read Access Token」<strong>哪一栏都可以</strong>
+            ，直接整串复制粘进来即可，本应用会自动识别。国内网络通常需要代理才能访问。
           </Typography>
 
           {hasKey && (
@@ -570,8 +570,8 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
             <TextField
               size="small"
               fullWidth
-              label="TMDB API Key"
-              placeholder="粘贴 v3 API Key（留空则只用免 Key 图源）"
+              label="TMDB Key 或 Token"
+              placeholder="API Key / API Read Access Token 都行（留空则只用免 Key 图源）"
               value={keyDraft}
               onChange={(e) => setKeyDraft(e.target.value)}
               inputProps={{ 'data-testid': 'tmdb-key-input' }}
