@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 
 // jsdom has no getUserMedia; mock it so the video element tests don't crash.
@@ -58,5 +58,34 @@ describe('App renders without crashing', () => {
 
     // AB loop controls should be somewhere
     expect(container.textContent).toContain('A-B');
+  });
+});
+
+describe('App — discover view toggle', () => {
+  it('keeps the study stage mounted while the discover view is open', async () => {
+    render(<App />);
+
+    // The learning stage is mounted to begin with.
+    expect(screen.getByTestId('study-stage')).toBeTruthy();
+
+    // Switch to the discovery view.
+    fireEvent.click(screen.getByTestId('nav-discover'));
+
+    // The discovery view is now on screen …
+    expect(screen.getByTestId('movie-grid')).toBeTruthy();
+
+    // … but the study stage must NOT have been unmounted. Unmounting it would
+    // destroy the <video> element, resetting playback to 0:00 while
+    // `currentTime` still held the old value — the user would lose their
+    // place and the subtitle highlight would desync from the picture. The
+    // stage is hidden with CSS instead, so it has to stay in the document.
+    expect(screen.getByTestId('study-stage')).toBeTruthy();
+
+    // Switching back restores the study UI.
+    fireEvent.click(screen.getByTestId('nav-study'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('movie-grid')).toBeNull();
+    });
+    expect(screen.getByTestId('study-stage')).toBeTruthy();
   });
 });

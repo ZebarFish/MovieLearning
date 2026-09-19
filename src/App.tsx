@@ -384,6 +384,24 @@ export default function App(): JSX.Element {
 
   const closeDrawer = (): void => setDrawer(null);
 
+  /**
+   * Switch between the learning stage and the movie discovery view.
+   *
+   * Leaving 'study' pauses playback and closes any open drawer. The media
+   * element itself is NOT unmounted — the main stage is hidden with CSS
+   * instead (see the main-stage comment below) — so the playback position
+   * survives the round trip to the discover view and back.
+   */
+  const handleToggleView = useCallback((): void => {
+    if (view === 'study') {
+      videoRef.current?.pause();
+      setDrawer(null);
+      setView('discover');
+    } else {
+      setView('study');
+    }
+  }, [view, videoRef]);
+
   // Main-stage CTA: open the native file picker directly (no drawer hop).
   const handleStageMediaFile = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -475,7 +493,7 @@ export default function App(): JSX.Element {
           <Button
             size="small"
             variant={view === 'discover' ? 'contained' : 'outlined'}
-            onClick={() => setView((v) => (v === 'study' ? 'discover' : 'study'))}
+            onClick={handleToggleView}
             data-testid={view === 'study' ? 'nav-discover' : 'nav-study'}
           >
             {view === 'study' ? '🎬 发现片单' : '📺 返回学习台'}
@@ -495,13 +513,20 @@ export default function App(): JSX.Element {
         />
       )}
 
-      {/* Main stage: video column + subtitle column, both fit one screen. */}
-      {view === 'study' ? (
+      {/* Main stage: video column + subtitle column, both fit one screen.
+          NOTE: this block stays MOUNTED while the discover view is open — it is
+          only hidden with `display: none`. Unmounting it would destroy the
+          <video> element, dropping the loaded source and resetting playback to
+          0:00, while `currentTime` (which the subtitle list, the guided
+          learning panels and the A-B loop all read) still held the old value.
+          The user would lose their place and the subtitle highlight would
+          desync from the picture. */}
       <Box
+        data-testid="study-stage"
         sx={{
           flex: 1,
           minHeight: 0,
-          display: 'flex',
+          display: view === 'study' ? 'flex' : 'none',
           gap: 2,
           p: 1.5,
         }}
@@ -634,9 +659,10 @@ export default function App(): JSX.Element {
           </Box>
         </Box>
       </Box>
-      ) : (
-        <MovieDiscover />
-      )}
+
+      {/* Full-screen movie discovery view. Sits alongside the (hidden) study
+          stage rather than replacing it, so the <video> element survives. */}
+      {view === 'discover' && <MovieDiscover />}
 
       {view === 'study' && (
       <>
