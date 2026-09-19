@@ -51,13 +51,31 @@ export function isDownloadAvailable(): boolean {
   return USE_LOCAL_PROXY;
 }
 
-async function readError(res: Response, fallback: string): Promise<string> {
+/**
+ * What a request means when the answer is not our JSON at all: the request did
+ * reach *a* server, but not the download service.
+ *
+ * This is not hypothetical — `vite preview` reads its config once at startup,
+ * so an app launched before this feature existed keeps serving `/dl/*` from the
+ * SPA fallback and hands back `index.html`. The user gets a "download is
+ * broken" panel after an update unless we say what actually happened.
+ */
+const SERVICE_NOT_READY =
+  '本机服务的下载接口未就绪。请关闭应用后重新启动（双击 start.bat），再试一次。';
+
+/** Read the body as JSON, or `undefined` when it is not JSON at all. */
+async function readJsonBody(res: Response): Promise<unknown> {
+  const text = await res.text();
   try {
-    const body = (await res.json()) as { error?: unknown };
-    if (typeof body?.error === 'string' && body.error.trim()) return body.error;
+    return JSON.parse(text) as unknown;
   } catch {
-    // not JSON — fall through to the generic message
+    return undefined;
   }
+}
+
+function errorMessageFrom(body: unknown, fallback: string): string {
+  const candidate = (body as { error?: unknown } | undefined)?.error;
+  if (typeof candidate === 'string' && candidate.trim()) return candidate;
   return fallback;
 }
 
@@ -71,10 +89,15 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new DownloadApiError(0, '无法连接本机下载服务，请确认应用正在运行。');
   }
+
+  const body = await readJsonBody(res);
   if (!res.ok) {
-    throw new DownloadApiError(res.status, await readError(res, `请求失败（${res.status}）。`));
+    throw new DownloadApiError(res.status, errorMessageFrom(body, `请求失败（${res.status}）。`));
   }
-  return (await res.json()) as T;
+  if (body === undefined) {
+    throw new DownloadApiError(res.status, SERVICE_NOT_READY);
+  }
+  return body as T;
 }
 
 function post<T>(path: string, body: unknown): Promise<T> {

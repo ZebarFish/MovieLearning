@@ -45,7 +45,23 @@ function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    text: async () => JSON.stringify(body),
     json: async () => body,
+  } as unknown as Response;
+}
+
+/**
+ * The SPA fallback answer: HTTP 200, `text/html`, no JSON in sight. A local
+ * server started before the download service existed replies exactly like this.
+ */
+function htmlResponse(html = '<!doctype html><html><body>app</body></html>'): Response {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => html,
+    json: async () => {
+      throw new SyntaxError(`Unexpected token '<', "${html.slice(0, 9)}..." is not valid JSON`);
+    },
   } as unknown as Response;
 }
 
@@ -130,19 +146,29 @@ describe('startDownload', () => {
     });
   });
 
-  it('falls back to a generic message when the failure is not JSON', async () => {
+  it('falls back to a generic message when a failure body is not JSON', async () => {
     stubFetch(async () => ({
       ok: false,
       status: 500,
-      json: async () => {
-        throw new Error('not json');
-      },
+      text: async () => '<!doctype html><html>oops</html>',
     }) as unknown as Response);
 
     const failure = await startDownload('https://example.com/v.mp4').catch((e) => e);
     expect(failure).toBeInstanceOf(DownloadApiError);
     expect((failure as DownloadApiError).status).toBe(500);
     expect((failure as DownloadApiError).message).toContain('500');
+  });
+
+  it('explains a stale local server that answers /dl/* with the app HTML', async () => {
+    // This is the real-world case: `vite preview` read its config before the
+    // download service existed, so /dl/* falls through to the SPA fallback.
+    // A raw "Unexpected token '<'" tells the user nothing actionable.
+    stubFetch(async () => htmlResponse());
+
+    const failure = await startDownload('https://example.com/v.mp4').catch((e) => e);
+    expect(failure).toBeInstanceOf(DownloadApiError);
+    expect((failure as DownloadApiError).message).toContain('重新启动');
+    expect((failure as DownloadApiError).message).toContain('start.bat');
   });
 
   it('explains a dead local server instead of throwing a bare TypeError', async () => {
@@ -170,6 +196,13 @@ describe('listDownloads', () => {
     const listing = await listDownloads();
     expect(listing.tasks).toEqual([]);
     expect(listing.dir).toBe('');
+  });
+
+  it('rejects with a restart hint when the service answers with the app HTML', async () => {
+    // What the panel's very first load sees against a server started before
+    // this feature existed — the failure the user actually reported.
+    stubFetch(async () => htmlResponse());
+    await expect(listDownloads()).rejects.toThrow(/重新启动/);
   });
 });
 
