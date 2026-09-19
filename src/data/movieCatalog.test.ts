@@ -125,6 +125,16 @@ describe('MOVIE_CATALOG', () => {
     }
   });
 
+  it('keeps a deep bench of entry-level and easy picks', () => {
+    // Listening practice is the whole point of the tool, and learners bounce
+    // off a catalog that only offers hard material — so the easy end has to
+    // stay wide. This guards against a future edit quietly thinning it out.
+    const entryLevel = MOVIE_CATALOG.filter((m) => m.difficulty === 1).length;
+    const easy = MOVIE_CATALOG.filter((m) => m.difficulty <= 2).length;
+    expect(entryLevel).toBeGreaterThanOrEqual(15);
+    expect(easy).toBeGreaterThanOrEqual(70);
+  });
+
   it('CATALOG_LANGS matches the languages actually present, in stable order', () => {
     const present = new Set<SubtitleLang>();
     for (const m of MOVIE_CATALOG) {
