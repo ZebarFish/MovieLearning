@@ -20,6 +20,7 @@ import {
   getLastPosterError,
   getTmdbApiKey,
   hasTmdbApiKey,
+  isV4Token,
   setTmdbApiKey,
 } from './tmdb';
 import type { PosterQuery } from './tmdb';
@@ -328,6 +329,60 @@ describe('transport: browser-direct, with a breaker', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('credential handling: v3 key and v4 token both work', () => {
+  /** A realistic v4 Read Access Token: a JWT with three segments. */
+  const V4 = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhYmMifQ.signature';
+
+  it('classifies the two credential shapes', () => {
+    expect(isV4Token(V4)).toBe(true);
+    expect(isV4Token('  ' + V4 + '  ')).toBe(true);
+    // A v3 key is 32 hex characters, not a JWT.
+    expect(isV4Token('0123456789abcdef0123456789abcdef')).toBe(false);
+    expect(isV4Token('')).toBe(false);
+    expect(isV4Token('eyJnotajwt')).toBe(false);
+  });
+
+  it('sends a v3 key as ?api_key= with no Authorization header', async () => {
+    const key = '0123456789abcdef0123456789abcdef';
+    setTmdbApiKey(key);
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse('/v3.jpg'),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchPosterUrl(MOVIE);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toContain(`api_key=${key}`);
+    expect(init?.headers).toBeUndefined();
+  });
+
+  it('sends a v4 token as a Bearer header with no api_key param', async () => {
+    // Pasting the wrong one of the two is the common mistake, so both are
+    // accepted — this is what removes the footgun.
+    setTmdbApiKey(V4);
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse('/v4.jpg'),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await fetchPosterUrl(MOVIE)).toBe(
+      'https://image.tmdb.org/t/p/w342/v4.jpg',
+    );
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).not.toContain('api_key=');
+    expect((init?.headers as Record<string, string> | undefined)?.Authorization).toBe(
+      `Bearer ${V4}`,
+    );
+  });
+
+  it('flags a rejected v4 token as an auth error too', async () => {
+    setTmdbApiKey(V4);
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null, 401)));
+    expect(await fetchPosterUrl(MOVIE)).toBeNull();
+    expect(getLastPosterError()).toBe('auth');
   });
 });
 

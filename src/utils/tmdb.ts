@@ -183,6 +183,22 @@ type ApiResult =
   | { kind: 'error' };
 
 /**
+ * TMDB shows TWO credentials side by side on the same settings page, which
+ * makes pasting the "wrong" one a very common mistake:
+ *
+ *   - "API Key (v3 auth)"                → 32 hex chars, sent as `?api_key=`
+ *   - "API Read Access Token (v4 auth)"  → a JWT, sent as a Bearer header
+ *
+ * Both are accepted; the shape of the value tells them apart, so the UI never
+ * has to make the user choose. v4 costs one CORS preflight, which TMDB answers
+ * with `Access-Control-Allow-Headers: Authorization`.
+ */
+export function isV4Token(credential: string): boolean {
+  const c = credential.trim();
+  return c.startsWith('eyJ') && c.split('.').length === 3;
+}
+
+/**
  * One authenticated GET against a specific base. Distinguishes a *definitive*
  * answer (200 / 404 / 401, safe to cache or act on) from a *transient* one
  * (network failure / timeout / 5xx — must NOT be cached, or a temporary outage
@@ -194,11 +210,19 @@ async function requestOnce(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<ApiResult> {
+  const credential = apiKey.trim();
+  const v4 = isV4Token(credential);
   const sep = path.includes('?') ? '&' : '?';
-  const url = `${base}${path}${sep}api_key=${encodeURIComponent(apiKey)}`;
+  const url = v4
+    ? `${base}${path}`
+    : `${base}${path}${sep}api_key=${encodeURIComponent(credential)}`;
+
   const { signal: s, cleanup } = withTimeout(signal, ATTEMPT_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: s });
+    const init: RequestInit = v4
+      ? { signal: s, headers: { Authorization: `Bearer ${credential}` } }
+      : { signal: s };
+    const res = await fetch(url, init);
     if (res.status === 401) return { kind: 'auth' };
     if (res.status === 404) return { kind: 'miss' };
     if (!res.ok) return { kind: 'error' };
