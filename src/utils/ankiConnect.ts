@@ -32,6 +32,7 @@ import {
   TTS_EXPRESSION,
   buildAnkiModelPayload,
   buildCardTemplates,
+  buildTemplateMap,
 } from './ankiTemplate';
 import { formatForms, formatLexicalTags } from './wordMeta';
 
@@ -424,7 +425,7 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
   let templatesUpdated = false;
   if (templateStale) {
     await invoke('updateModelTemplates', {
-      model: { name: ANKI_MODEL_NAME, templates: buildCardTemplates() },
+      model: { name: ANKI_MODEL_NAME, templates: buildTemplateMap() },
     });
     templatesUpdated = true;
   }
@@ -433,7 +434,15 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
     const styling = await invoke<{ css?: string }>('modelStyling', {
       modelName: ANKI_MODEL_NAME,
     });
-    if (!styling?.css?.includes('.word')) {
+    // Same reasoning as the template check above: CSS installed before the
+    // nine-field model carries `.word` but none of the newer rules, so testing
+    // for `.word` alone would leave 音标 / 词汇标记 unstyled forever.
+    const css = styling?.css ?? '';
+    const stylingStale =
+      !css.includes('.word') ||
+      !css.includes('.phonetic') ||
+      !css.includes('.tags');
+    if (stylingStale) {
       await invoke('updateModelStyling', {
         model: { name: ANKI_MODEL_NAME, css: ANKI_CSS },
       });

@@ -10,6 +10,7 @@ import {
   syncVocabToAnki,
 } from './ankiConnect';
 import {
+  ANKI_CSS,
   ANKI_FIELDS,
   ANKI_MODEL_NAME,
   CARD_BACK,
@@ -364,7 +365,7 @@ describe('ensureAnkiModel', () => {
       modelTemplates: () => ({
         [CARD_NAME]: { Front: oldFront, Back: oldBack },
       }),
-      modelStyling: () => ({ css: '.word { color: red; }' }),
+      modelStyling: () => ({ css: ANKI_CSS }),
     });
 
     const status = await ensureAnkiModel();
@@ -373,6 +374,17 @@ describe('ensureAnkiModel', () => {
     expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(true);
     // Fields were already present, so nothing is added — only the template.
     expect(status.addedFields).toEqual([]);
+
+    // AnkiConnect's updateModelTemplates wants templates keyed BY NAME; an
+    // array here is what produced "'list' object has no attribute 'get'".
+    const update = calls.find(
+      (c) => c['action'] === 'updateModelTemplates',
+    ) as { params: { model: { templates: unknown } } };
+    const templates = update.params.model.templates;
+    expect(Array.isArray(templates)).toBe(false);
+    expect(templates).toEqual({
+      [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
+    });
   });
 
   it('leaves a healthy template and styling untouched', async () => {
@@ -382,7 +394,7 @@ describe('ensureAnkiModel', () => {
       modelTemplates: () => ({
         [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
       }),
-      modelStyling: () => ({ css: '.word { color: red; }' }),
+      modelStyling: () => ({ css: ANKI_CSS }),
     });
 
     const status = await ensureAnkiModel();
@@ -391,6 +403,28 @@ describe('ensureAnkiModel', () => {
     expect(status.addedFields).toEqual([]);
     expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(false);
     expect(calls.some((c) => c['action'] === 'updateModelStyling')).toBe(false);
+  });
+
+  it('upgrades styling that predates the nine-field model', async () => {
+    const calls = trackCalls({
+      modelNames: () => [ANKI_MODEL_NAME],
+      modelFieldNames: () => [...ANKI_FIELDS],
+      modelTemplates: () => ({
+        [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
+      }),
+      // The old CSS has `.word` (so the previous check called it fresh) but
+      // none of the rules the new 音标 / 词汇标记 sections need.
+      modelStyling: () => ({ css: '.word { font-size: 34px; }' }),
+    });
+
+    await ensureAnkiModel();
+
+    const update = calls.find(
+      (c) => c['action'] === 'updateModelStyling',
+    ) as { params: { model: { css: string } } };
+    expect(update).toBeDefined();
+    expect(update.params.model.css).toContain('.phonetic');
+    expect(update.params.model.css).toContain('.tags');
   });
 
   it('reinstalls a template that lost the pronunciation expression', async () => {

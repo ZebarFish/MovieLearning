@@ -8,6 +8,7 @@ import {
   ANKI_MODEL_NAME,
   CARD_BACK,
   CARD_FRONT,
+  CARD_NAME,
   FIELD_DEFINITION,
   FIELD_ENGLISH_DEFINITION,
   FIELD_FORMS,
@@ -20,6 +21,7 @@ import {
   TTS_EXPRESSION,
   buildAnkiModelPayload,
   buildCardTemplates,
+  buildTemplateMap,
 } from './ankiTemplate';
 
 describe('ankiTemplate', () => {
@@ -93,5 +95,20 @@ describe('ankiTemplate', () => {
     const b = buildCardTemplates();
     expect(a).not.toBe(b);
     expect(a).toEqual(b);
+  });
+
+  it('maps templates by NAME for updateModelTemplates, not as an array', () => {
+    const map = buildTemplateMap();
+    // AnkiConnect's updateModelTemplates handler runs
+    // `templates = model['templates']` then `templates.get(...)`, so handing
+    // it the array form crashes with
+    // "'list' object has no attribute 'get'".
+    expect(Array.isArray(map)).toBe(false);
+    expect(map).toEqual({
+      [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
+    });
+    // The two payloads must stay distinct shapes.
+    expect(Array.isArray(buildCardTemplates())).toBe(true);
+    expect(buildTemplateMap()).not.toBe(map);
   });
 });

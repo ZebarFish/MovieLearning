@@ -216,11 +216,35 @@ export function buildAnkiModelPayload(): {
   };
 }
 
-/** Payload for AnkiConnect's `updateModelTemplates` action. */
+/**
+ * Payload for AnkiConnect's `createModel` action, which wants an ARRAY of
+ * `{ Name, Front, Back }`.
+ *
+ * Do NOT reuse this for `updateModelTemplates` — see `buildTemplateMap()`.
+ */
 export function buildCardTemplates(): {
   Name: string;
   Front: string;
   Back: string;
 }[] {
   return [{ Name: CARD_NAME, Front: CARD_FRONT, Back: CARD_BACK }];
+}
+
+/**
+ * Payload for AnkiConnect's `updateModelTemplates` action, which — unlike
+ * `createModel` — wants the templates keyed BY NAME:
+ *
+ *   { '单词卡': { Front, Back } }
+ *
+ * The two shapes are not interchangeable. Handing this action the array form
+ * makes AnkiConnect crash with `'list' object has no attribute 'get'`: its
+ * handler does `templates = model['templates']` and then
+ * `templates.get(ankiTemplate['name'])`, so a list has no `.get`
+ * (addons21/2055492159/__init__.py → updateModelTemplates).
+ */
+export function buildTemplateMap(): Record<
+  string,
+  { Front: string; Back: string }
+> {
+  return { [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK } };
 }
