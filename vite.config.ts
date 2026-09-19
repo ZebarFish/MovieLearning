@@ -30,18 +30,30 @@ const DICT_PROXY = {
   },
 };
 
+// Optional TMDB poster enrichment for the discovery page. The catalog ships
+// without posters; this proxy is only used when a TMDB API key is configured.
+// The poster IMAGE itself is a direct <img> src (image.tmdb.org) and needs no
+// proxy. Clients (src/utils/tmdb.ts) prefix these paths via USE_LOCAL_PROXY.
+const TMDB_PROXY = {
+  '/tmdb': {
+    target: 'https://api.themoviedb.org/3',
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/tmdb/, ''),
+  },
+};
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
     open: true,
-    proxy: DICT_PROXY,
+    proxy: { ...DICT_PROXY, ...TMDB_PROXY },
   },
   preview: {
     port: 5180,
     strictPort: true,
     open: true,
-    proxy: DICT_PROXY,
+    proxy: { ...DICT_PROXY, ...TMDB_PROXY },
   },
 });

@@ -125,3 +125,82 @@ export type StudyStage =
   | 'correct'
   | 'shadow'
   | 'collect';
+
+// ---------------------------------------------------------------------------
+// Movie discovery (curated catalog + recommendation engine)
+// ---------------------------------------------------------------------------
+
+/** 影片题材标签 */
+export type MovieGenre =
+  | 'drama' | 'comedy' | 'crime' | 'thriller' | 'sci-fi' | 'animation'
+  | 'documentary' | 'action' | 'romance' | 'fantasy' | 'adventure'
+  | 'history' | 'music' | 'family' | 'mystery';
+
+/** 媒体形态 */
+export type MovieMediaType = 'movie' | 'series';
+
+/** 学习向指标等级，1(易) ~ 5(难) */
+export type Level1to5 = 1 | 2 | 3 | 4 | 5;
+
+/** 一条影片/剧集条目 */
+export interface MovieEntry {
+  /** 稳定唯一 id（小写 slug），同时作为收藏/已看的存储键 */
+  id: string;
+  /** 中文标题 */
+  title: string;
+  /** 原文标题 */
+  originalTitle: string;
+  /** 首播年份 */
+  year: number;
+  /** 对白主要语言 */
+  primaryLang: SubtitleLang;
+  /** 出现的语言（多语种影片可多个），必须包含 primaryLang */
+  langs: SubtitleLang[];
+  /** 题材，至少一个 */
+  genres: MovieGenre[];
+  mediaType: MovieMediaType;
+  /** 综合学习难度 1~5 */
+  difficulty: Level1to5;
+  /** 语速 1~5（5 最快） */
+  speechRate: Level1to5;
+  /** 词汇难度 1~5 */
+  vocabulary: Level1to5;
+  /** 对白密度 1~5（5 台词最密） */
+  dialogueDensity: Level1to5;
+  /** 口碑评分 0~10 */
+  rating: number;
+  /** 热度 0~100 */
+  popularity: number;
+  /** 一句话中文简介 */
+  synopsis: string;
+  /** 口语/文化标签，如 '美音' '英音' '情景喜剧' '职场' */
+  tags: string[];
+  /** 口音描述，可选 */
+  accent?: string;
+  /** TMDB id，用于可选的海报补图 */
+  tmdbId?: number;
+}
+
+/** 发现页筛选条件 */
+export interface MovieFilter {
+  /** 选中语言；空数组 = 不限 */
+  langs: SubtitleLang[];
+  /** 选中题材；空数组 = 不限 */
+  genres: MovieGenre[];
+  /** 难度区间 [min, max]，闭区间，1~5 */
+  difficulty: [Level1to5, Level1to5];
+  /** 媒体形态；'all' = 不限 */
+  mediaType: MovieMediaType | 'all';
+  /** 关键字，匹配 title / originalTitle / tags / synopsis，大小写不敏感 */
+  query: string;
+}
+
+/** 排序方式 */
+export type MovieSortKey = 'match' | 'rating' | 'difficulty-asc' | 'difficulty-desc' | 'year';
+
+/** 用户个性化偏好 */
+export interface MoviePrefs {
+  favorites: string[];
+  watched: string[];
+  hidden: string[];
+}
