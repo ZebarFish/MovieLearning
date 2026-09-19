@@ -3,15 +3,38 @@
  *
  * The poster resolver must be robust on a flaky, partly-blocked network:
  * providers are tried in order, a provider that answers with the WRONG title is
- * rejected, hits are cached, and misses expire instead of sticking forever.
+ * rejected, a source that starts failing hard is abandoned instead of hammered,
+ * hits are cached, and misses expire instead of sticking forever.
  *
  * `fetch` is stubbed per-test; the real network is never touched. Note that
  * USE_LOCAL_PROXY is false under Vitest, so the provider URLs are the real
  * hosts and `proxiedImage` is a pass-through (except in the last describe,
  * where the proxy decision is mocked).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearPosterCache, fetchPosterUrl, proxiedImage } from './posters';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/** Controllable stand-in for the TMDB module (see the "with a key" describe). */
+const tmdb = vi.hoisted(() => ({
+  key: false,
+  url: null as string | null,
+  calls: 0,
+}));
+
+vi.mock('./tmdb', () => ({
+  hasTmdbApiKey: () => tmdb.key,
+  fetchPosterUrl: async () => {
+    tmdb.calls += 1;
+    return tmdb.url;
+  },
+}));
+
+import {
+  clearPosterCache,
+  fetchPosterUrl,
+  isDoubanBlocked,
+  proxiedImage,
+  resetPosterSources,
+} from './posters';
 import type { MovieEntry } from '../types';
 
 function entry(over: Partial<MovieEntry> = {}): MovieEntry {
@@ -59,8 +82,20 @@ function callUrl(fn: { mock: { calls: unknown[][] } }, index: number): string {
   return String(fn.mock.calls[index]?.[0]);
 }
 
+const DOUBAN_HIT = (title: string, img: string): Route => [
+  /douban\.com/,
+  () => json([{ title, img }]),
+];
+
+beforeEach(() => {
+  tmdb.key = false;
+  tmdb.url = null;
+  tmdb.calls = 0;
+});
+
 afterEach(() => {
   clearPosterCache();
+  resetPosterSources();
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -81,10 +116,7 @@ describe('provider order', () => {
 
   it('tries Douban first for films', async () => {
     const fn = mockFetch([
-      [
-        /douban\.com/,
-        () => json([{ title: '千与千寻', img: 'https://img1.doubanio.com/p.jpg' }]),
-      ],
+      DOUBAN_HIT('千与千寻', 'https://img1.doubanio.com/p.jpg'),
     ]);
 
     const movie = entry({
@@ -97,23 +129,48 @@ describe('provider order', () => {
     expect(callUrl(fn, 0)).toContain('movie.douban.com');
   });
 
-  it('falls through to iTunes when the earlier providers miss', async () => {
+  it('falls back to Douban when TVmaze misses a series', async () => {
+    const fn = mockFetch([
+      DOUBAN_HIT('老友记 第一季', 'https://img1.doubanio.com/f.jpg'),
+    ]);
+
+    expect(await fetchPosterUrl(entry())).toBe('https://img1.doubanio.com/f.jpg');
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(callUrl(fn, 1)).toContain('movie.douban.com');
+  });
+
+  it('never asks iTunes — the provider was removed', async () => {
+    const fn = mockFetch([]);
+    await fetchPosterUrl(entry());
+    const urls = fn.mock.calls.map((_c, i) => callUrl(fn, i));
+    expect(urls.some((u) => u.includes('itunes'))).toBe(false);
+  });
+});
+
+describe('with a TMDB key', () => {
+  it('consults TMDB first and never touches the keyless sources on a hit', async () => {
+    tmdb.key = true;
+    tmdb.url = 'https://image.tmdb.org/t/p/w342/abc.jpg';
+    const fn = mockFetch([]);
+
+    expect(await fetchPosterUrl(entry())).toBe('https://image.tmdb.org/t/p/w342/abc.jpg');
+    expect(tmdb.calls).toBe(1);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('degrades to the keyless sources when TMDB returns nothing', async () => {
+    tmdb.key = true;
+    tmdb.url = null;
     const fn = mockFetch([
       [
-        /itunes\.apple\.com/,
-        () =>
-          json({
-            results: [
-              { trackName: 'Friends', artworkUrl100: 'https://is1-ssl.mzstatic.com/a/100x100bb.jpg' },
-            ],
-          }),
+        /tvmaze\.com/,
+        () => json({ name: 'Friends', image: { medium: 'https://static.tvmaze.com/f.jpg' } }),
       ],
     ]);
 
-    // No TVmaze and no Douban route → both 404 → iTunes answers.
-    const url = await fetchPosterUrl(entry());
-    expect(url).toBe('https://is1-ssl.mzstatic.com/a/600x600bb.jpg');
-    expect(fn).toHaveBeenCalledTimes(3);
+    expect(await fetchPosterUrl(entry())).toBe('https://static.tvmaze.com/f.jpg');
+    expect(tmdb.calls).toBe(1);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -124,10 +181,7 @@ describe('wrong-title guard', () => {
         /tvmaze\.com/,
         () => json({ name: 'Frasier', image: { medium: 'https://static.tvmaze.com/wrong.jpg' } }),
       ],
-      [
-        /douban\.com/,
-        () => json([{ title: '老友记 第一季', img: 'https://img1.doubanio.com/right.jpg' }]),
-      ],
+      DOUBAN_HIT('老友记 第一季', 'https://img1.doubanio.com/right.jpg'),
     ]);
 
     expect(await fetchPosterUrl(entry())).toBe('https://img1.doubanio.com/right.jpg');
@@ -135,11 +189,7 @@ describe('wrong-title guard', () => {
 
   it('ignores a Douban hit whose title does not match', async () => {
     mockFetch([
-      [
-        /douban\.com/,
-        () => json([{ title: '完全无关的片子', img: 'https://img1.doubanio.com/wrong.jpg' }]),
-      ],
-      [/itunes\.apple\.com/, () => json({ results: [] })],
+      DOUBAN_HIT('完全无关的片子', 'https://img1.doubanio.com/wrong.jpg'),
     ]);
 
     const movie = entry({
@@ -154,6 +204,77 @@ describe('wrong-title guard', () => {
   it('returns null when every provider misses', async () => {
     mockFetch([]);
     expect(await fetchPosterUrl(entry())).toBeNull();
+  });
+});
+
+describe('Douban circuit breaker', () => {
+  /** 403 = Douban refusing us, which is what the breaker is for. */
+  function always403() {
+    return mockFetch([[/douban\.com/, () => json(null, false, 403)]]);
+  }
+
+  it('stops calling Douban after repeated hard failures', async () => {
+    const fn = always403();
+
+    // Three failing lookups trip the breaker …
+    await fetchPosterUrl(entry({ id: 'a', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'b', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'c', mediaType: 'movie' }));
+    expect(isDoubanBlocked()).toBe(true);
+    const callsBefore = fn.mock.calls.length;
+
+    // … and after that the source is not contacted at all.
+    await fetchPosterUrl(entry({ id: 'd', mediaType: 'movie' }));
+    expect(fn.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('does NOT trip on an empty result set — that is a legitimate miss', async () => {
+    mockFetch([[/douban\.com/, () => json([])]]);
+
+    await fetchPosterUrl(entry({ id: 'a', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'b', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'c', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'd', mediaType: 'movie' }));
+
+    expect(isDoubanBlocked()).toBe(false);
+  });
+
+  it('a success resets the failure streak', async () => {
+    always403();
+    await fetchPosterUrl(entry({ id: 'a', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'b', mediaType: 'movie' }));
+    expect(isDoubanBlocked()).toBe(false);
+
+    // A success must clear the count, so the next two failures still do not
+    // trip it — otherwise an occasional error would eventually disable the
+    // source for everyone.
+    vi.unstubAllGlobals();
+    mockFetch([DOUBAN_HIT('老友记', 'https://img1.doubanio.com/f.jpg')]);
+    await fetchPosterUrl(entry({ id: 'c' }));
+    expect(isDoubanBlocked()).toBe(false);
+
+    vi.unstubAllGlobals();
+    always403();
+    await fetchPosterUrl(entry({ id: 'd', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'e', mediaType: 'movie' }));
+    expect(isDoubanBlocked()).toBe(false);
+  });
+
+  it('a single failure does not trip it', async () => {
+    always403();
+    await fetchPosterUrl(entry({ id: 'a', mediaType: 'movie' }));
+    expect(isDoubanBlocked()).toBe(false);
+  });
+
+  it('resetPosterSources clears the breaker', async () => {
+    always403();
+    await fetchPosterUrl(entry({ id: 'a', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'b', mediaType: 'movie' }));
+    await fetchPosterUrl(entry({ id: 'c', mediaType: 'movie' }));
+    expect(isDoubanBlocked()).toBe(true);
+
+    resetPosterSources();
+    expect(isDoubanBlocked()).toBe(false);
   });
 });
 
@@ -176,18 +297,30 @@ describe('caching', () => {
     mockFetch([]);
     await fetchPosterUrl(entry());
 
-    const raw = localStorage.getItem('letv.poster.v2.friends');
+    const raw = localStorage.getItem('letv.poster.v3.friends');
     expect(raw).toBeTruthy();
     expect(raw?.startsWith('{')).toBe(true);
     const parsed = JSON.parse(raw ?? '{}') as { at?: unknown };
     expect(typeof parsed.at).toBe('number');
   });
 
+  it('does not reuse the retired v2 (iTunes-era) cache entries', async () => {
+    // A stale v2 hit must be ignored: its URL may point at a host the image
+    // proxy no longer allows, which would render as a broken image.
+    localStorage.setItem('letv.poster.v2.friends', 'https://is1-ssl.mzstatic.com/a.jpg');
+    const fn = mockFetch([
+      [
+        /tvmaze\.com/,
+        () => json({ name: 'Friends', image: { medium: 'https://static.tvmaze.com/f.jpg' } }),
+      ],
+    ]);
+
+    expect(await fetchPosterUrl(entry())).toBe('https://static.tvmaze.com/f.jpg');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it('honours a fresh miss without touching the network', async () => {
-    localStorage.setItem(
-      'letv.poster.v2.friends',
-      JSON.stringify({ at: Date.now() }),
-    );
+    localStorage.setItem('letv.poster.v3.friends', JSON.stringify({ at: Date.now() }));
     const fn = mockFetch([
       [
         /tvmaze\.com/,
@@ -201,7 +334,7 @@ describe('caching', () => {
 
   it('retries a miss that is older than the TTL', async () => {
     const aged = Date.now() - 25 * 60 * 60 * 1000;
-    localStorage.setItem('letv.poster.v2.friends', JSON.stringify({ at: aged }));
+    localStorage.setItem('letv.poster.v3.friends', JSON.stringify({ at: aged }));
     const fn = mockFetch([
       [
         /tvmaze\.com/,
@@ -233,8 +366,8 @@ describe('image proxying', () => {
   });
 
   it('routes the image through /poster-img when served locally', async () => {
-    // Douban's CDN rejects hotlinks, so this rewrite is what makes its posters
-    // usable at all — worth locking down.
+    // Douban's CDN rejects hotlinks (418/403), so this rewrite is what makes
+    // its posters usable at all — worth locking down.
     vi.resetModules();
     vi.doMock('./localProxy', () => ({ USE_LOCAL_PROXY: true }));
     try {

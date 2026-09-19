@@ -12,6 +12,8 @@ import App from './App';
 vi.mock('./utils/posters', () => ({
   fetchPosterUrl: vi.fn(async () => null),
   clearPosterCache: vi.fn(),
+  isDoubanBlocked: vi.fn(() => false),
+  resetPosterSources: vi.fn(),
 }));
 
 const SRT_SAMPLE = `1

@@ -1,28 +1,38 @@
 /**
  * posters.ts
  *
- * Keyless poster resolution for the discovery catalog.
+ * Keyless poster resolution for the discovery catalog, with TMDB as an
+ * optional first-class upgrade when the user supplies an API key.
  *
- * Why not just TMDB? Because api.themoviedb.org times out on many CN
- * connections and www.themoviedb.org — where you would register for a key — is
- * blocked outright. Requiring a key there would mean "no posters, ever" for a
- * large share of users. So we resolve through keyless public sources instead,
- * in order of how well they match this catalog:
+ * Source order
+ * ------------
+ *   key present : TMDB → (TVmaze | Douban)
+ *   no key      : TVmaze (series) | Douban (films)
  *
- *   1. Douban suggest  — matched on the CHINESE title, which is what the
- *                        catalog stores; by far the best hit rate.
- *   2. TVmaze          — series only; effectively 100% for well-known shows.
- *   3. iTunes Search   — Apple's official catalogue, covers both.
- *   4. TMDB            — only when the user has supplied a key (last resort,
- *                        since it usually cannot be reached).
+ * Why this shape — all of it measured on a real, partly-blocked network:
  *
- * Two gotchas this module handles:
- *  - Douban's image CDN rejects hotlinks, so the returned URL is routed through
- *    the local server's `/poster-img` endpoint (see vite.config.ts). Passing a
- *    raw Douban URL to an <img> would 403.
+ *  - TMDB is authoritative (exact ids, no fuzzy matching) but needs a key, and
+ *    `api.themoviedb.org` is unreachable on many CN connections. So it leads
+ *    when a key is configured and is skipped entirely otherwise.
+ *  - TVmaze covers series essentially 100% here, keylessly. It is series-only.
+ *  - Douban's autocomplete matches our Chinese titles best, but it rate-limits
+ *    aggressive clients — a burst of parallel requests gets the whole session
+ *    answered with empty arrays. It is therefore SERIALIZED with a minimum gap
+ *    and trips a circuit breaker on hard failures. See `doubanGate`.
+ *  - iTunes Search was REMOVED. `entity=movie` returned zero results in every
+ *    region tried (US/GB/CN) while `entity=tvSeason` worked — Apple simply does
+ *    not serve its movie catalogue to this client. TVmaze already covers every
+ *    series iTunes found, so the provider only cost requests and latency.
+ *  - Wikipedia was evaluated and rejected: en.wikipedia.org is unreachable from
+ *    this network (~10s timeout, every attempt), so it would be dead weight.
+ *
+ * Two further gotchas handled here:
+ *  - Douban's image CDN rejects hotlinks (418 without a Referer, 403 with a
+ *    localhost one), so returned URLs are routed through the local server's
+ *    `/poster-img` endpoint (see vite.config.ts).
  *  - A provider can answer with a *different* title than we asked for (remakes,
- *    same-name shows). Each provider therefore verifies the name loosely before
- *    accepting a hit — a wrong poster is worse than no poster.
+ *    same-name shows), so each provider verifies the name loosely — a wrong
+ *    poster is worse than no poster.
  */
 import type { MovieEntry } from '../types';
 import { USE_LOCAL_PROXY } from './localProxy';
@@ -30,13 +40,26 @@ import { fetchPosterUrl as fetchTmdbPosterUrl, hasTmdbApiKey } from './tmdb';
 
 const DOUBAN_API = USE_LOCAL_PROXY ? '/poster/douban' : 'https://movie.douban.com';
 const TVMAZE_API = USE_LOCAL_PROXY ? '/poster/tvmaze' : 'https://api.tvmaze.com';
-const ITUNES_API = USE_LOCAL_PROXY ? '/poster/itunes' : 'https://itunes.apple.com';
 
-const CACHE_PREFIX = 'letv.poster.v2.';
-const NULL_SENTINEL = '__null__';
+/**
+ * v3: the iTunes provider was dropped, so any cached mzstatic URLs from v2 are
+ * stale (and no longer allowed through the image proxy). Bumping the prefix
+ * retires them in one step.
+ */
+const CACHE_PREFIX = 'letv.poster.v3.';
 
 /** How long a confirmed "no poster" is remembered before we retry. */
 const MISS_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Douban pacing. It answers bursts of parallel requests with empty arrays for
+ * the rest of the session, so requests are serialized with a minimum gap.
+ * ~350ms keeps a 27-film pass under ~10s while staying well inside the limit.
+ */
+const DOUBAN_MIN_GAP_MS = 350;
+
+/** Consecutive hard failures (non-200 / network) before we stop asking. */
+const DOUBAN_MAX_FAILURES = 3;
 
 /** Session-level memo; `null` means "known missing". */
 const MEM = new Map<string, string | null>();
@@ -63,27 +86,83 @@ function looselyMatches(a: string, b: string): boolean {
   return x === y || x.startsWith(y) || y.startsWith(x);
 }
 
-async function getJson(url: string, signal?: AbortSignal): Promise<unknown> {
-  try {
-    const res = await fetch(url, signal ? { signal } : undefined);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// --- Douban gate ------------------------------------------------------------
+
+let doubanChain: Promise<unknown> = Promise.resolve();
+let doubanLastAt = 0;
+let doubanFailures = 0;
+
+/**
+ * True once Douban has failed hard enough times that continuing would only
+ * make things worse. Consulted by `doubanPoster` so a blocked source costs one
+ * check per entry instead of one request per entry.
+ */
+let doubanBlocked = false;
+
+/** Whether the keyless film source gave up for this session (for UI hints). */
+export function isDoubanBlocked(): boolean {
+  return doubanBlocked;
+}
+
+/** Reset the gate + breaker. Used by 「重新拉取海报」 and by tests. */
+export function resetPosterSources(): void {
+  doubanChain = Promise.resolve();
+  doubanLastAt = 0;
+  doubanFailures = 0;
+  doubanBlocked = false;
+}
+
+/** Serialize Douban access and enforce the minimum gap between requests. */
+async function doubanGate(): Promise<void> {
+  const run = doubanChain.then(async () => {
+    const wait = DOUBAN_MIN_GAP_MS - (Date.now() - doubanLastAt);
+    if (wait > 0) await sleep(wait);
+    doubanLastAt = Date.now();
+  });
+  // Keep the chain alive even if a link rejects, so one failure cannot wedge
+  // every later request.
+  doubanChain = run.catch(() => undefined);
+  await run;
 }
 
 // --- Providers --------------------------------------------------------------
 
-/** Douban autocomplete, keyed on the Chinese title. Best hit rate here. */
+/**
+ * Douban autocomplete, keyed on the Chinese title. Best hit rate for films.
+ *
+ * Returns `null` for a genuine "no match" AND for "blocked" — the caller only
+ * cares that no poster was found. Block detection lives in `noteDoubanOutcome`.
+ */
 async function doubanPoster(
   entry: MovieEntry,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const data = await getJson(
-    `${DOUBAN_API}/j/subject_suggest?q=${encodeURIComponent(entry.title)}`,
-    signal,
-  );
+  if (doubanBlocked) return null;
+
+  await doubanGate();
+  if (signal?.aborted || doubanBlocked) return null;
+
+  let data: unknown = null;
+  try {
+    const res = await fetch(
+      `${DOUBAN_API}/j/subject_suggest?q=${encodeURIComponent(entry.title)}`,
+      signal ? { signal } : undefined,
+    );
+    if (!res.ok) {
+      noteDoubanOutcome(false);
+      return null;
+    }
+    data = await res.json();
+    noteDoubanOutcome(true);
+  } catch {
+    noteDoubanOutcome(false);
+    return null;
+  }
+
   if (!Array.isArray(data)) return null;
 
   for (const item of data) {
@@ -98,15 +177,42 @@ async function doubanPoster(
   return null;
 }
 
+/**
+ * Track Douban health. Only *hard* failures count: an empty result set is a
+ * legitimate "this title is not in the index" and must not trip the breaker,
+ * or a handful of obscure entries would disable the source for everyone.
+ */
+function noteDoubanOutcome(ok: boolean): void {
+  if (ok) {
+    doubanFailures = 0;
+    return;
+  }
+  doubanFailures += 1;
+  if (doubanFailures >= DOUBAN_MAX_FAILURES) doubanBlocked = true;
+}
+
+/** Shape of the bits of a TVmaze `singlesearch` payload we actually read. */
+interface TvmazeShow {
+  name?: unknown;
+  image?: { medium?: unknown; original?: unknown };
+}
+
 /** TVmaze — series only. `singlesearch` 404s rather than guessing wildly. */
 async function tvmazePoster(
   entry: MovieEntry,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const data = (await getJson(
-    `${TVMAZE_API}/singlesearch/shows?q=${encodeURIComponent(entry.originalTitle)}`,
-    signal,
-  )) as { name?: unknown; image?: { medium?: unknown; original?: unknown } } | null;
+  let data: TvmazeShow | null = null;
+  try {
+    const res = await fetch(
+      `${TVMAZE_API}/singlesearch/shows?q=${encodeURIComponent(entry.originalTitle)}`,
+      signal ? { signal } : undefined,
+    );
+    if (!res.ok) return null;
+    data = (await res.json()) as TvmazeShow;
+  } catch {
+    return null;
+  }
   if (!data) return null;
   if (typeof data.name !== 'string' || !looselyMatches(data.name, entry.originalTitle)) {
     return null;
@@ -121,39 +227,7 @@ async function tvmazePoster(
   return url ? proxiedImage(url) : null;
 }
 
-/** Apple's iTunes Search catalogue — official and free, covers films and TV. */
-async function itunesPoster(
-  entry: MovieEntry,
-  signal?: AbortSignal,
-): Promise<string | null> {
-  const entity = entry.mediaType === 'series' ? 'tvSeason' : 'movie';
-  const data = (await getJson(
-    `${ITUNES_API}/search?term=${encodeURIComponent(entry.originalTitle)}` +
-      `&entity=${entity}&limit=10&country=US`,
-    signal,
-  )) as { results?: unknown } | null;
-
-  const results = Array.isArray(data?.results) ? data.results : [];
-  for (const item of results) {
-    const row = item as
-      | { trackName?: unknown; collectionName?: unknown; artworkUrl100?: unknown }
-      | null;
-    if (!row || typeof row.artworkUrl100 !== 'string') continue;
-    const name =
-      typeof row.trackName === 'string'
-        ? row.trackName
-        : typeof row.collectionName === 'string'
-          ? row.collectionName
-          : '';
-    if (!looselyMatches(name, entry.originalTitle)) continue;
-    // artworkUrl100 is a 100px thumb; swapping the size token yields a poster.
-    const big = row.artworkUrl100.replace(/\/\d+x\d+bb\./, '/600x600bb.');
-    return proxiedImage(big);
-  }
-  return null;
-}
-
-/** TMDB — opt-in only (needs a key and, in practice, network access to it). */
+/** TMDB — authoritative, but opt-in (needs a key, and a reachable network). */
 async function tmdbPoster(
   entry: MovieEntry,
   signal?: AbortSignal,
@@ -172,12 +246,8 @@ async function tmdbPoster(
 
 // --- Cache ------------------------------------------------------------------
 
-function cacheKey(entry: MovieEntry): string {
-  return entry.id;
-}
-
 function readCache(entry: MovieEntry): string | null | undefined {
-  const key = cacheKey(entry);
+  const key = entry.id;
   if (MEM.has(key)) return MEM.get(key) ?? null;
 
   try {
@@ -203,7 +273,7 @@ function readCache(entry: MovieEntry): string | null | undefined {
 }
 
 function writeCache(entry: MovieEntry, url: string | null): void {
-  const key = cacheKey(entry);
+  const key = entry.id;
   MEM.set(key, url);
   try {
     localStorage.setItem(
@@ -247,10 +317,12 @@ export async function fetchPosterUrl(
   const cached = readCache(entry);
   if (cached !== undefined) return cached;
 
-  const providers: Array<(e: MovieEntry, s?: AbortSignal) => Promise<string | null>> =
-    entry.mediaType === 'series'
-      ? [tvmazePoster, doubanPoster, itunesPoster, tmdbPoster]
-      : [doubanPoster, itunesPoster, tmdbPoster];
+  const keyless: Array<(e: MovieEntry, s?: AbortSignal) => Promise<string | null>> =
+    entry.mediaType === 'series' ? [tvmazePoster, doubanPoster] : [doubanPoster];
+
+  // A configured key makes TMDB the best answer available; keep the keyless
+  // sources behind it so a bad/expired key still degrades gracefully.
+  const providers = hasTmdbApiKey() ? [tmdbPoster, ...keyless] : keyless;
 
   for (const provider of providers) {
     if (signal?.aborted) return null;

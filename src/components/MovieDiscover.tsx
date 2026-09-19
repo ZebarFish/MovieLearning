@@ -17,6 +17,7 @@ import {
   FormControl,
   IconButton,
   InputLabel,
+  Link,
   MenuItem,
   Paper,
   Select,
@@ -50,7 +51,13 @@ import {
   pickBatch,
   sortMovies,
 } from '../utils/movieRecommend';
-import { clearPosterCache, fetchPosterUrl } from '../utils/posters';
+import {
+  clearPosterCache,
+  fetchPosterUrl,
+  isDoubanBlocked,
+  resetPosterSources,
+} from '../utils/posters';
+import { getTmdbApiKey, setTmdbApiKey } from '../utils/tmdb';
 import { useMoviePrefs } from '../hooks/useMoviePrefs';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { MovieCard } from './MovieCard';
@@ -67,8 +74,12 @@ const BATCH_SIZE = 12;
 /**
  * Poster lookups run through a small worker pool. Fetching ~65 titles one at a
  * time would take tens of seconds; an unbounded fan-out would hammer the APIs.
+ * Douban additionally paces its own requests internally.
  */
 const POSTER_CONCURRENCY = 6;
+
+/** Free API key signup page, linked from the poster panel. */
+const TMDB_SIGNUP_URL = 'https://www.themoviedb.org/settings/api';
 
 const SORT_OPTIONS: { value: MovieSortKey; label: string }[] = [
   { value: 'match', label: '综合推荐' },
@@ -196,11 +207,18 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
     return sortMovies(filtered, sort, filter, prefs);
   }, [filtered, sort, batchSeed, filter, prefs]);
 
-  // --- Poster backfill (keyless; see src/utils/posters.ts) -------------------
+  // --- Poster backfill (see src/utils/posters.ts) ---------------------------
   const [posterMap, setPosterMap] = useState<Record<string, string>>({});
   const [posterLoading, setPosterLoading] = useState<boolean>(false);
   /** Bumped by 「重新拉取海报」 to force a fresh pass after clearing the cache. */
   const [posterReload, setPosterReload] = useState<number>(0);
+  /** True once the keyless film source stopped answering (rate limited). */
+  const [sourceBlocked, setSourceBlocked] = useState<boolean>(false);
+  // `tmdbKey` is React state rather than a direct `getTmdbApiKey()` call so that
+  // saving a key re-runs the lookup immediately — no page reload needed.
+  const [tmdbKey, setTmdbKey] = useState<string>(() => getTmdbApiKey());
+  const [keyDraft, setKeyDraft] = useState<string>(() => getTmdbApiKey());
+  const hasKey = tmdbKey.trim().length > 0;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -211,6 +229,8 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
       const next: Record<string, string> = {};
       // Shared cursor + N workers = the same set is covered exactly once.
       // `cursor++` happens synchronously between awaits, so it is race-free.
+      // Douban paces itself internally, so this fan-out only parallelises the
+      // providers that tolerate it.
       let cursor = 0;
       const workers = Array.from(
         { length: Math.min(POSTER_CONCURRENCY, list.length) },
@@ -228,6 +248,7 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
       await Promise.all(workers);
       if (!cancelled) {
         setPosterMap(next);
+        setSourceBlocked(isDoubanBlocked());
         setPosterLoading(false);
       }
     })();
@@ -236,12 +257,26 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
       cancelled = true;
       controller.abort();
     };
-  }, [list, posterReload]);
+  }, [list, posterReload, hasKey, tmdbKey]);
 
   const reloadPosters = (): void => {
     clearPosterCache();
+    resetPosterSources();
     setPosterMap({});
+    setSourceBlocked(false);
     setPosterReload((n) => n + 1);
+  };
+
+  const saveTmdbKey = (): void => {
+    const next = keyDraft.trim();
+    setTmdbApiKey(next); // also drops the poster cache, so the new key applies
+    setTmdbKey(next);
+  };
+
+  const clearTmdbKey = (): void => {
+    setTmdbApiKey('');
+    setKeyDraft('');
+    setTmdbKey('');
   };
 
   const handleHide = (movie: MovieEntry): void => {
@@ -460,21 +495,43 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
         </Stack>
       </CollapsiblePanel>
 
-      {/* Poster status. Artwork is resolved automatically from keyless public
-          sources (Douban / TVmaze / iTunes) — no API key required. */}
+      {/* Poster status + optional TMDB upgrade. Series posters resolve
+          automatically from TVmaze and film posters from Douban; nothing is
+          required. A TMDB key lifts coverage to essentially everything. */}
       <CollapsiblePanel
         title="海报"
         hint={
           posterLoading
             ? '正在补图…'
-            : `自动补图 · 已载入 ${Object.keys(posterMap).length}/${list.length} 张`
+            : Object.keys(posterMap).length < list.length
+              ? `已载入 ${Object.keys(posterMap).length}/${list.length} 张（点开看原因）`
+              : `已全部载入 · ${list.length} 张`
         }
+        defaultExpanded={sourceBlocked}
       >
         <Stack spacing={1}>
           <Typography variant="caption" color="text.secondary">
-            海报会按片名从公开数据源（豆瓣 / TVmaze / iTunes）自动匹配，无需任何 API
-            Key。匹配不到的片子保留占位图。海报为第三方内容，仅在本机预览使用。
+            海报按片名自动匹配，无需配置：剧集走 TVmaze，电影走豆瓣。匹配不到的片子保留占位图。
+            海报为第三方内容，仅在本机预览使用。
           </Typography>
+
+          {sourceBlocked && (
+            <Typography variant="caption" color="warning.main">
+              豆瓣暂时限制了本机请求（短时间内请求过多会触发），已暂停自动补图。稍后点「重新拉取海报」
+              重试，或填入 TMDB API Key 改用更稳定的图源。
+            </Typography>
+          )}
+
+          {!posterLoading &&
+            !hasKey &&
+            list.length > 0 &&
+            Object.keys(posterMap).length < list.length && (
+              <Typography variant="caption" color="text.secondary">
+                有 {list.length - Object.keys(posterMap).length} 部没匹配到海报：可能是片名对不上，
+                也可能是图源临时限流。稍后再点「重新拉取海报」，或填下面的 TMDB Key 提高命中。
+              </Typography>
+            )}
+
           <Stack direction="row" spacing={1}>
             <Button
               size="small"
@@ -484,6 +541,43 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
               data-testid="poster-reload"
             >
               重新拉取海报
+            </Button>
+          </Stack>
+
+          <Typography variant="caption" color="text.secondary" sx={{ pt: 0.5 }}>
+            如果想要更全、更准的海报，可填一个 TMDB API Key（有 Key 时优先走 TMDB）。
+            Key 只保存在本机浏览器，不会上传到任何服务器。可到{' '}
+            <Link
+              href={TMDB_SIGNUP_URL}
+              target="_blank"
+              rel="noreferrer noopener"
+              underline="hover"
+            >
+              themoviedb.org
+            </Link>{' '}
+            免费申请（注册后进「设置 → API」选 v3 auth）。国内网络通常需要代理才能访问。
+          </Typography>
+
+          <Stack direction="row" spacing={1} alignItems="center">
+            <TextField
+              size="small"
+              fullWidth
+              label="TMDB API Key"
+              placeholder="粘贴 v3 API Key（留空则只用免 Key 图源）"
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              inputProps={{ 'data-testid': 'tmdb-key-input' }}
+            />
+            <Button
+              size="small"
+              variant="contained"
+              onClick={saveTmdbKey}
+              data-testid="tmdb-key-save"
+            >
+              保存
+            </Button>
+            <Button size="small" onClick={clearTmdbKey} data-testid="tmdb-key-clear">
+              清除
             </Button>
           </Stack>
         </Stack>

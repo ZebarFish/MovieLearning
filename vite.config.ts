@@ -33,11 +33,14 @@ const DICT_PROXY = {
 
 // Poster providers for the discovery page (see src/utils/posters.ts).
 //
-// TMDB is deliberately NOT the default: api.themoviedb.org times out on many
-// CN connections, and www.themoviedb.org — where you would register for a key —
-// is blocked outright. So the catalog resolves posters through keyless public
-// sources that DO answer here: Douban matches our Chinese titles best, TVmaze
-// is near-perfect for series, iTunes Search is Apple's official catalogue.
+// TMDB is not the default because api.themoviedb.org times out on many CN
+// connections, and www.themoviedb.org — where you register for a key — can be
+// blocked too. The catalog therefore resolves posters through keyless sources
+// that DO answer here: Douban matches our Chinese titles best, TVmaze is
+// near-perfect for series. TMDB is used first only when the user has a key.
+//
+// iTunes Search was removed: its `entity=movie` returns zero results in every
+// region tried, and TVmaze already covers every series iTunes could find.
 const POSTER_PROXY = {
   '/poster/douban': {
     target: 'https://movie.douban.com',
@@ -50,12 +53,6 @@ const POSTER_PROXY = {
     changeOrigin: true,
     rewrite: (p: string) => p.replace(/^\/poster\/tvmaze/, ''),
   },
-  '/poster/itunes': {
-    target: 'https://itunes.apple.com',
-    changeOrigin: true,
-    rewrite: (p: string) => p.replace(/^\/poster\/itunes/, ''),
-  },
-  // Optional + last resort: only contacted when the user supplies an API key.
   '/tmdb': {
     target: 'https://api.themoviedb.org/3',
     changeOrigin: true,
@@ -72,7 +69,6 @@ const PROXY = { ...DICT_PROXY, ...POSTER_PROXY };
 const POSTER_IMAGE_HOSTS = [
   /(^|\.)doubanio\.com$/,
   /(^|\.)tvmaze\.com$/,
-  /(^|\.)mzstatic\.com$/,
   /(^|\.)tmdb\.org$/,
 ];
 

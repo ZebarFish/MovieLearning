@@ -18,10 +18,15 @@
  *     (or the id 404s) we fall back to a title SEARCH so the entry still gets a
  *     poster instead of a permanent placeholder.
  *
- * Proxy routing reuses the project's `USE_LOCAL_PROXY` decision (dev server /
- * preview proxy `/tmdb` → api.themoviedb.org/3); the poster IMAGE itself is a
- * direct <img> src and needs no proxy. Results are cached in memory and in
- * localStorage so repeats never hit the network.
+ * Proxy routing: the browser talks to TMDB DIRECTLY, and the local `/tmdb`
+ * proxy is only a fallback. Reason: a "system proxy" VPN (HTTP_PROXY pointed at
+ * e.g. 127.0.0.1:2604) is honoured by the browser but NOT by Node — which means
+ * the Vite server cannot reach api.themoviedb.org even when the browser can.
+ * Routing through the server would therefore break the very setup it was meant
+ * to help. TMDB sends `Access-Control-Allow-Origin: *`, so a direct call is
+ * allowed. The fallback covers the mirror-image case (a TUN-mode VPN where Node
+ * has connectivity). Results are cached in memory and in localStorage so
+ * repeats never hit the network.
  */
 import type { MovieMediaType } from '../types';
 import { USE_LOCAL_PROXY } from './localProxy';
@@ -104,8 +109,48 @@ export function hasTmdbApiKey(): boolean {
   return getTmdbApiKey().length > 0;
 }
 
-const API_BASE = USE_LOCAL_PROXY ? '/tmdb' : 'https://api.themoviedb.org/3';
+const DIRECT_BASE = 'https://api.themoviedb.org/3';
+const PROXY_BASE = '/tmdb';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w342';
+
+/**
+ * Per-attempt timeout. A blocked host otherwise hangs until the OS gives up
+ * (~10s), which multiplied by dozens of entries stalls the whole poster pass.
+ */
+const ATTEMPT_TIMEOUT_MS = 8000;
+
+/** Consecutive all-bases-failed requests before TMDB is skipped entirely. */
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+let consecutiveFailures = 0;
+/** Set once the server proxy has failed, so it is not retried per entry. */
+let proxyFallbackUsable = true;
+
+/** Bases to try, in order. Empty when TMDB should be skipped this session. */
+function apiBaseOrder(): string[] {
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return [];
+  // Not served from localhost → there is no Vite proxy to fall back to.
+  if (!USE_LOCAL_PROXY) return [DIRECT_BASE];
+  return proxyFallbackUsable ? [DIRECT_BASE, PROXY_BASE] : [DIRECT_BASE];
+}
+
+/** Combine the caller's signal with a timeout, and clean both up afterwards. */
+function withTimeout(
+  outer: AbortSignal | undefined,
+  ms: number,
+): { signal: AbortSignal; cleanup: () => void } {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  const forward = (): void => ctrl.abort();
+  outer?.addEventListener('abort', forward);
+  return {
+    signal: ctrl.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      outer?.removeEventListener('abort', forward);
+    },
+  };
+}
 
 /** Load a previously persisted poster URL (memoized into MEM_CACHE). */
 function loadPersisted(ck: string): string | null | undefined {
@@ -138,33 +183,60 @@ type ApiResult =
   | { kind: 'error' };
 
 /**
- * One authenticated GET. Distinguishes a *definitive* answer (200 / 404, safe
- * to cache) from a *transient* one (network failure / abort / 5xx — must NOT be
- * cached, or a temporary outage would look permanent).
+ * One authenticated GET against a specific base. Distinguishes a *definitive*
+ * answer (200 / 404 / 401, safe to cache or act on) from a *transient* one
+ * (network failure / timeout / 5xx — must NOT be cached, or a temporary outage
+ * would look permanent).
+ */
+async function requestOnce(
+  base: string,
+  path: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResult> {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `${base}${path}${sep}api_key=${encodeURIComponent(apiKey)}`;
+  const { signal: s, cleanup } = withTimeout(signal, ATTEMPT_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: s });
+    if (res.status === 401) return { kind: 'auth' };
+    if (res.status === 404) return { kind: 'miss' };
+    if (!res.ok) return { kind: 'error' };
+    return { kind: 'ok', data: await res.json() };
+  } catch {
+    // Network failure / abort / JSON parse error.
+    return { kind: 'error' };
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * One authenticated GET, trying each candidate base in turn.
+ *
+ * Only a network-level failure moves on to the next base: a 401 or 404 is
+ * TMDB's real answer and would be identical from the other base too.
  */
 async function requestJson(path: string, signal?: AbortSignal): Promise<ApiResult> {
   const apiKey = getTmdbApiKey();
   if (!apiKey) return { kind: 'miss' };
 
-  const sep = path.includes('?') ? '&' : '?';
-  const url = `${API_BASE}${path}${sep}api_key=${encodeURIComponent(apiKey)}`;
-  try {
-    const res = await fetch(url, signal ? { signal } : undefined);
-    if (res.status === 401) {
-      lastError = 'auth';
-      return { kind: 'auth' };
+  const bases = apiBaseOrder();
+  if (bases.length === 0) return { kind: 'error' };
+
+  for (const base of bases) {
+    const r = await requestOnce(base, path, apiKey, signal);
+    if (r.kind === 'ok' || r.kind === 'miss' || r.kind === 'auth') {
+      if (r.kind === 'auth') lastError = 'auth';
+      consecutiveFailures = 0;
+      return r;
     }
-    if (res.status === 404) return { kind: 'miss' };
-    if (!res.ok) {
-      if (lastError !== 'auth') lastError = 'network';
-      return { kind: 'error' };
-    }
-    return { kind: 'ok', data: await res.json() };
-  } catch {
-    // Network failure / abort / JSON parse error.
-    if (lastError !== 'auth') lastError = 'network';
-    return { kind: 'error' };
+    if (base === PROXY_BASE) proxyFallbackUsable = false;
   }
+
+  consecutiveFailures += 1;
+  if (lastError !== 'auth') lastError = 'network';
+  return { kind: 'error' };
 }
 
 function posterPathOf(data: unknown): string | null {
@@ -271,13 +343,15 @@ export async function fetchPosterUrl(
 }
 
 /**
- * Drop the in-memory and persisted poster caches, and reset the error flag.
- * Called by `setTmdbApiKey` (so a corrected key takes effect immediately) and
- * by tests.
+ * Drop the in-memory and persisted poster caches, and reset the error and
+ * connectivity state. Called by `setTmdbApiKey` (so a corrected key takes
+ * effect immediately) and by tests.
  */
 export function clearTmdbCache(): void {
   MEM_CACHE.clear();
   lastError = 'none';
+  consecutiveFailures = 0;
+  proxyFallbackUsable = true;
   try {
     const keys: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {

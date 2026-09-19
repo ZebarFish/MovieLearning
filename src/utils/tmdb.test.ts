@@ -6,8 +6,9 @@
  * movie-vs-TV namespace split (TMDB keeps them in separate id spaces); the
  * title-search fallback for entries with no hard-coded id; cache behaviour
  * (definitive answers cached, transient failures retryable, rejected keys not
- * poisoning anything); and the error flag the UI uses to explain a wall of
- * placeholders.
+ * poisoning anything); the error flag the UI uses to explain a wall of
+ * placeholders; and the transport policy — call TMDB directly from the browser,
+ * give up on a blocked host after a few tries, and never hang on one attempt.
  *
  * `fetch` is stubbed per-test; the real network is never touched.
  */
@@ -255,6 +256,78 @@ describe('failure handling', () => {
       'https://image.tmdb.org/t/p/w342/recovered.jpg',
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('transport: browser-direct, with a breaker', () => {
+  it('calls the API host directly from the browser, not the local proxy', async () => {
+    // A "system proxy" VPN is honoured by the browser but NOT by Node, so the
+    // server-side /tmdb proxy cannot reach TMDB even when the browser can.
+    // Going direct is what makes a key work in that setup.
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () => jsonResponse('/direct.jpg'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchPosterUrl(MOVIE);
+    const url = requestedUrl((fetchMock.mock.calls[0] as unknown[])[0]);
+    expect(url.startsWith('https://api.themoviedb.org/3/')).toBe(true);
+    expect(url).not.toContain('/tmdb/');
+  });
+
+  it('stops asking TMDB after repeated failures, so a blocked host is paid for once', async () => {
+    setTmdbApiKey('k');
+    const fetchMock = vi.fn(async () => jsonResponse(null, 500));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Each entry costs two attempts (id lookup, then title search).
+    await fetchPosterUrl({ tmdbId: 1, mediaType: 'movie', title: 'A' });
+    await fetchPosterUrl({ tmdbId: 2, mediaType: 'movie', title: 'B' });
+
+    const callsBefore = fetchMock.mock.calls.length;
+    await fetchPosterUrl({ tmdbId: 3, mediaType: 'movie', title: 'C' });
+    expect(fetchMock.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('gives TMDB another chance after clearTmdbCache', async () => {
+    setTmdbApiKey('k');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null, 500)));
+    await fetchPosterUrl({ tmdbId: 1, mediaType: 'movie', title: 'A' });
+    await fetchPosterUrl({ tmdbId: 2, mediaType: 'movie', title: 'B' });
+
+    clearTmdbCache();
+    const fetchMock = vi.fn(async () => jsonResponse('/back.jpg'));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await fetchPosterUrl({ tmdbId: 3, mediaType: 'movie', title: 'C' })).toBe(
+      'https://image.tmdb.org/t/p/w342/back.jpg',
+    );
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('aborts a hanging attempt instead of stalling the whole pass', async () => {
+    vi.useFakeTimers();
+    try {
+      setTmdbApiKey('k');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          (_url: unknown, init?: { signal?: AbortSignal }) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () =>
+                reject(new Error('aborted')),
+              );
+            }),
+        ),
+      );
+
+      const pending = fetchPosterUrl(MOVIE);
+      // Two attempts (id + search), each capped by ATTEMPT_TIMEOUT_MS (8000).
+      await vi.advanceTimersByTimeAsync(8100);
+      await vi.advanceTimersByTimeAsync(8100);
+
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
