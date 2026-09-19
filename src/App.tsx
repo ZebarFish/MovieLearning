@@ -34,6 +34,7 @@ import { CollapsiblePanel } from './components/CollapsiblePanel';
 import { AutoSubtitleMatch } from './components/AutoSubtitleMatch';
 import { shiftTracks } from './utils/subtitleOffset';
 import { WordDetailCard } from './components/WordDetailCard';
+import { MovieDiscover } from './components/MovieDiscover';
 import { useVideoPlayer } from './hooks/useVideoPlayer';
 import { useVocabulary } from './hooks/useVocabulary';
 import { useStudyProgress } from './hooks/useStudyProgress';
@@ -113,7 +114,16 @@ const INITIAL_LOOP: ABLoopState = {
 
 type DrawerKind = 'media' | 'steps' | null;
 
+/**
+ * Top-level view switch. 'study' is the original learning stage; 'discover'
+ * is the full-screen movie discovery view. All study state lives in this
+ * component and is preserved across the switch — we only swap which block of
+ * JSX is rendered, never unmount the study stage's state.
+ */
+type AppView = 'study' | 'discover';
+
 export default function App(): JSX.Element {
+  const [view, setView] = useState<AppView>('study');
   const [videoSource, setVideoSource] = useState<VideoSource | null>(null);
   const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
   /** Global subtitle timeline offset (seconds) for A/V sync nudging. */
@@ -413,55 +423,68 @@ export default function App(): JSX.Element {
           <Typography variant="h6" sx={{ mr: 1 }}>
             听美剧学英语
           </Typography>
-          <Chip
-            size="small"
-            color="primary"
-            variant="outlined"
-            label={`步骤 ${Math.min(stepIndex + 1, LEARNING_STEPS.length)}/${LEARNING_STEPS.length} · ${currentStep.title}`}
-            onClick={() => setDrawer('steps')}
-            sx={{ cursor: 'pointer' }}
-          />
-          <Button
-            size="small"
-            onClick={() => setDrawer('steps')}
-          >
-            🎓 学习步骤
-          </Button>
-          <Button
-            size="small"
-            onClick={() => setDrawer('media')}
-          >
-            🎬 媒体与字幕
-          </Button>
-          <Tooltip title="按「定位→盲听→听写→订正→跟读→收词」六步引导学习">
-            <Button
-              size="small"
-              variant={guided ? 'contained' : 'text'}
-              onClick={() => setGuided((v) => !v)}
-            >
-              🎯 引导学习
-            </Button>
-          </Tooltip>
-          <Box sx={{ flexGrow: 1 }} />
-          {!videoSource && (
-            <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
-              尚未加载媒体 — 点「媒体与字幕」选择文件
-            </Typography>
+          {view === 'study' && (
+            <>
+              <Chip
+                size="small"
+                color="primary"
+                variant="outlined"
+                label={`步骤 ${Math.min(stepIndex + 1, LEARNING_STEPS.length)}/${LEARNING_STEPS.length} · ${currentStep.title}`}
+                onClick={() => setDrawer('steps')}
+                sx={{ cursor: 'pointer' }}
+              />
+              <Button
+                size="small"
+                onClick={() => setDrawer('steps')}
+              >
+                🎓 学习步骤
+              </Button>
+              <Button
+                size="small"
+                onClick={() => setDrawer('media')}
+              >
+                🎬 媒体与字幕
+              </Button>
+              <Tooltip title="按「定位→盲听→听写→订正→跟读→收词」六步引导学习">
+                <Button
+                  size="small"
+                  variant={guided ? 'contained' : 'text'}
+                  onClick={() => setGuided((v) => !v)}
+                >
+                  🎯 引导学习
+                </Button>
+              </Tooltip>
+              <Box sx={{ flexGrow: 1 }} />
+              {!videoSource && (
+                <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
+                  尚未加载媒体 — 点「媒体与字幕」选择文件
+                </Typography>
+              )}
+              <Badge badgeContent={vocab.length} color="secondary">
+                <Button
+                  size="small"
+                  startIcon={<MenuBookIcon />}
+                  onClick={() => setVocabOpen(true)}
+                >
+                  词库
+                </Button>
+              </Badge>
+            </>
           )}
-          <Badge badgeContent={vocab.length} color="secondary">
-            <Button
-              size="small"
-              startIcon={<MenuBookIcon />}
-              onClick={() => setVocabOpen(true)}
-            >
-              词库
-            </Button>
-          </Badge>
+          {view === 'discover' && <Box sx={{ flexGrow: 1 }} />}
+          <Button
+            size="small"
+            variant={view === 'discover' ? 'contained' : 'outlined'}
+            onClick={() => setView((v) => (v === 'study' ? 'discover' : 'study'))}
+            data-testid={view === 'study' ? 'nav-discover' : 'nav-study'}
+          >
+            {view === 'study' ? '🎬 发现片单' : '📺 返回学习台'}
+          </Button>
         </Toolbar>
       </AppBar>
 
       {/* Guided learning stepper bar (six-step study flow). */}
-      {guided && (
+      {guided && view === 'study' && (
         <GuidedLearningBar
           stage={studyStage}
           onStageChange={setStudyStage}
@@ -473,6 +496,7 @@ export default function App(): JSX.Element {
       )}
 
       {/* Main stage: video column + subtitle column, both fit one screen. */}
+      {view === 'study' ? (
       <Box
         sx={{
           flex: 1,
@@ -610,7 +634,12 @@ export default function App(): JSX.Element {
           </Box>
         </Box>
       </Box>
+      ) : (
+        <MovieDiscover />
+      )}
 
+      {view === 'study' && (
+      <>
       {/* Secondary drawer: media + subtitle pickers. */}
       <Drawer
         anchor="left"
@@ -721,6 +750,8 @@ export default function App(): JSX.Element {
         zhCues={zhCues}
         onUpdateWord={updateWord}
       />
+      </>
+      )}
     </Box>
   );
 }
