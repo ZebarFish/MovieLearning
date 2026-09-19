@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import type { Plugin, PreviewServer, ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { registerDownloadService } from './server/downloader.mjs';
+import { registerDictionaryService } from './server/dictionary.mjs';
 
 // Dictionary + translation API proxies. Browser-side requests to external
 // services suffer from CORS blocks and unstable direct connectivity (CN
@@ -179,9 +180,30 @@ function downloadService(): Plugin {
   };
 }
 
+/**
+ * The offline ECDICT dictionary (`/dict/offline/*`).
+ *
+ * Like the download centre it lives in a plain `.mjs` and is registered on
+ * BOTH servers, so the app's level-0 word lookup works in `vite dev` and in
+ * the `vite preview` build that `start.bat` launches. It mounts at `/dict` but
+ * only answers `/dict/offline*`; everything else under `/dict` (the proxy
+ * routes) falls through to the existing proxies via `next()`.
+ */
+function dictionaryService(): Plugin {
+  return {
+    name: 'dictionary-service',
+    configureServer(server) {
+      registerDictionaryService(server);
+    },
+    configurePreviewServer(server) {
+      registerDictionaryService(server);
+    },
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), posterImageProxy(), downloadService()],
+  plugins: [react(), posterImageProxy(), downloadService(), dictionaryService()],
   server: {
     port: 5173,
     open: true,

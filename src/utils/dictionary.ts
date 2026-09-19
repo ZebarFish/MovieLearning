@@ -1,10 +1,15 @@
 /**
  * dictionary.ts
  *
- * Lightweight wrapper around the free Dictionary API
- * (https://dictionaryapi.dev/) to fetch English word definitions and IPA.
- * No API key is required. Falls back to Youdao (Chinese definitions) and
- * Datamuse (WordNet), and resolves inflected forms (chores → chore).
+ * Word lookup, offline first.
+ *
+ * Step 0 is a LOCAL dictionary — the ECDICT database (340 万词条, MIT) served
+ * by `server/dictionary.mjs` at `/dict/offline`. It answers in about a
+ * millisecond, never touches the network, and returns Chinese definitions.
+ * Only when it misses do we go online: the free Dictionary API
+ * (https://dictionaryapi.dev/), then Youdao (Chinese definitions), then
+ * Datamuse (WordNet). Inflected forms (chores → chore) are resolved on both
+ * the offline and the online path.
  */
 import { USE_LOCAL_PROXY } from './localProxy';
 
@@ -70,6 +75,117 @@ const YOUDAO = USE_LOCAL_PROXY
 const DATAMUSE = USE_LOCAL_PROXY
   ? '/dict/datamuse/words'
   : 'https://api.datamuse.com/words';
+
+/**
+ * Local offline dictionary, served by the Vite middleware in
+ * `server/dictionary.mjs`. It only exists while the app is served by the
+ * local dev/preview server, so outside that (tests, a build deployed to a
+ * real host) this is `null` and the online chain runs instead.
+ */
+const OFFLINE = USE_LOCAL_PROXY ? '/dict/offline' : null;
+
+/** The shape returned by `GET /dict/offline?w=<word>`. */
+interface OfflineEntry {
+  word?: string;
+  phonetic?: string;
+  /** Chinese definitions, several lines joined by a LITERAL `\n`. */
+  translation?: string;
+  /** English definitions, same literal-`\n` convention. */
+  definition?: string;
+}
+
+/**
+ * ECDICT writes line breaks inside `translation` / `definition` as two
+ * literal characters — a backslash followed by an `n` — not as U+000A.
+ * This is that two-character sequence, not an escape for a newline.
+ */
+const ECDICT_LINE_SEP = '\\n';
+
+/**
+ * ECDICT phonetics come in several shapes: `ˈfjuːnərəl`, `[ˈænɪməl]`, and
+ * `英 [ˈfjuːnərəl] 美 [ˈfjuːnərəl]`. Keep just the IPA itself.
+ */
+function cleanPhonetic(raw: string | undefined): string | undefined {
+  const text = (raw ?? '').trim();
+  if (!text) return undefined;
+  const bracketed = text.match(/\[([^\]]+)\]/);
+  const out = (bracketed ? bracketed[1] : text.replace(/[[\]]/g, '')).trim();
+  return out || undefined;
+}
+
+/** Turns one ECDICT line ("n. 日常杂务，家务活；苦差事") into a meaning group. */
+function parseEcdictLine(
+  line: string,
+): { partOfSpeech: string; definitions: string[] } | null {
+  const m = line.match(/^([a-z]+\.)\s*(.+)$/i);
+  const partOfSpeech = m ? m[1] : '';
+  const body = m ? m[2] : line;
+  const definitions = body
+    .split(/[；;]/)
+    .map((d) => d.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return definitions.length > 0 ? { partOfSpeech, definitions } : null;
+}
+
+/**
+ * Maps an ECDICT record onto the app's `WordDefinition`. Chinese wins over
+ * English; a record with neither is treated as a miss.
+ *
+ * Lines that share a part of speech are merged into one group — ECDICT
+ * frequently emits "n. …" on two separate lines, and the UI renders one card
+ * per group keyed by part of speech.
+ */
+function offlineEntryToDefinition(entry: OfflineEntry): WordDefinition | null {
+  const source =
+    (entry.translation ?? '').trim() || (entry.definition ?? '').trim();
+  if (!source) return null;
+
+  const groups = new Map<string, string[]>();
+  for (const rawLine of source.split(ECDICT_LINE_SEP)) {
+    const parsed = parseEcdictLine(rawLine.trim());
+    if (!parsed) continue;
+    const list = groups.get(parsed.partOfSpeech) ?? [];
+    list.push(...parsed.definitions);
+    groups.set(parsed.partOfSpeech, list);
+  }
+
+  const meanings = [...groups.entries()]
+    .map(([partOfSpeech, definitions]) => ({
+      partOfSpeech,
+      definitions: definitions.slice(0, 3),
+    }))
+    .filter((m) => m.definitions.length > 0);
+  if (meanings.length === 0) return null;
+
+  return {
+    word: (entry.word ?? '').trim(),
+    phonetic: cleanPhonetic(entry.phonetic),
+    meanings,
+  };
+}
+
+/**
+ * Step 0 of a lookup: the local ECDICT database. Returns null on any
+ * miss or failure (404 unknown word, 503 index not built, server absent,
+ * timeout) so the online chain can take over. Never throws.
+ *
+ * `queried` is deliberately left to the caller: ECDICT canonicalises the
+ * casing of proper nouns, so comparing `form` with `entry.word` here would
+ * wrongly flag `london` as an inflection of `London`.
+ */
+async function fetchFromOffline(form: string): Promise<WordDefinition | null> {
+  if (!OFFLINE) return null;
+  try {
+    const res = await fetch(`${OFFLINE}?w=${encodeURIComponent(form)}`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return null;
+    return offlineEntryToDefinition((await res.json()) as OfflineEntry);
+  } catch {
+    return null;
+  }
+}
 
 const POS_TAGS: Record<string, string> = {
   n: 'noun',
@@ -278,6 +394,23 @@ export async function lookupWord(word: string): Promise<WordDefinition | null> {
   if (cached !== undefined) return cached;
 
   try {
+    // Step 0 — the local ECDICT dictionary. A hit ends the lookup here,
+    // without a single network request.
+    const offline = await fetchFromOffline(cleaned);
+    if (offline) {
+      CACHE.set(cleaned, offline);
+      return offline;
+    }
+    for (const variant of morphologicalVariants(cleaned)) {
+      const off = await fetchFromOffline(variant);
+      if (off) {
+        // `cleaned` is a surface form; `off.word` is the ECDICT headword.
+        const result: WordDefinition = { ...off, queried: cleaned };
+        CACHE.set(cleaned, result);
+        return result;
+      }
+    }
+
     const direct = await fetchEntry(cleaned);
     if (direct && direct !== 'error') {
       CACHE.set(cleaned, direct);

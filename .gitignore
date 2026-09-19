@@ -48,6 +48,10 @@ coverage/
 # The directory carries its own .tasks.json manifest; neither belongs in git.
 downloads/
 
+# Local data blobs (the offline ECDICT dictionary DB, ~1 GB, plus its zip).
+# Downloaded, not source — never committed.
+data/
+
 # Local scratch files (probe output, captured build logs — never committed)
 .*.txt
 .preview.txt
