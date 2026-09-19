@@ -12,20 +12,16 @@ where node >nul 2>nul
 if errorlevel 1 goto nonode
 
 if not exist "node_modules" goto installdeps
-if not exist "dist\index.html" goto dobld
-goto run
+goto ensurebuild
 
 :installdeps
 echo [1/3] Installing dependencies - the first run can take a few minutes ...
 call npm install
 if errorlevel 1 goto failed
 
-:dobld
-if exist "dist\index.html" goto run
-echo [2/3] Building the project ...
-call npm run build
+:ensurebuild
+node scripts\ensure-build.mjs
 if errorlevel 1 goto failed
-goto run
 
 :run
 echo [3/3] Starting the local server at http://localhost:5180
