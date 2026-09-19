@@ -101,34 +101,118 @@ export interface SyncResult {
  * field: some Anki/AnkiConnect combos drop `front:` terms and quoted
  * `deck:"..."` filters, which silently defeats search-based dedupe and leads
  * to duplicate cards.
+ *
+ * But a record that only ever grows goes stale the moment the user deletes a
+ * card in Anki: the word is skipped as a "duplicate" forever even though the
+ * deck is empty. So each entry carries the `noteId` we created, which lets us
+ * ask Anki directly whether the note still exists.
  */
 const SYNCED_KEY = 'learnTV.anki.syncedWords.v1';
 
-function loadSyncedWords(): Record<string, string[]> {
-  try {
-    const raw = localStorage.getItem(SYNCED_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
-  } catch {
-    return {};
-  }
+/**
+ * One word we pushed into Anki, plus the id of the note created for it.
+ * `noteId` is absent on records written by older versions.
+ */
+interface SyncedNote {
+  word: string;
+  noteId?: number;
 }
 
-function saveSyncedWord(deck: string, word: string): void {
+/** Read the record, upgrading the legacy `string[]` shape on the way. */
+function loadSyncedNotes(): Record<string, SyncedNote[]> {
+  const out: Record<string, SyncedNote[]> = {};
   try {
-    const all = loadSyncedWords();
-    const list = all[deck] ?? [];
-    if (!list.includes(word)) {
-      list.push(word);
-      all[deck] = list;
-      localStorage.setItem(SYNCED_KEY, JSON.stringify(all));
+    const raw = localStorage.getItem(SYNCED_KEY);
+    if (!raw) return out;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [deck, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      const list: SyncedNote[] = [];
+      for (const item of value) {
+        if (typeof item === 'string') {
+          list.push({ word: item });
+        } else if (item && typeof (item as SyncedNote).word === 'string') {
+          list.push(item as SyncedNote);
+        }
+      }
+      out[deck] = list;
     }
+  } catch {
+    /* corrupt record — start clean rather than blocking every sync */
+  }
+  return out;
+}
+
+function saveSyncedNotes(all: Record<string, SyncedNote[]>): void {
+  try {
+    localStorage.setItem(SYNCED_KEY, JSON.stringify(all));
   } catch {
     /* non-fatal */
   }
 }
 
-/** Words collected by this app carry our tag; read their Front values. */
-async function getTaggedWords(): Promise<Set<string>> {
+/** Remember a word we just created a note for, along with that note's id. */
+function rememberSynced(deck: string, word: string, noteId: number): void {
+  const all = loadSyncedNotes();
+  const list = all[deck] ?? [];
+  const existing = list.find((r) => r.word === word);
+  if (existing) {
+    existing.noteId = noteId;
+  } else {
+    list.push({ word, noteId });
+  }
+  all[deck] = list;
+  saveSyncedNotes(all);
+}
+
+/** Drop words from the record — their notes no longer exist in Anki. */
+function forgetSynced(deck: string, words: string[]): void {
+  if (words.length === 0) return;
+  const gone = new Set(words);
+  const all = loadSyncedNotes();
+  const list = (all[deck] ?? []).filter((r) => !gone.has(r.word));
+  if (list.length > 0) {
+    all[deck] = list;
+  } else {
+    delete all[deck];
+  }
+  saveSyncedNotes(all);
+}
+
+/**
+ * Which of the given note ids still exist in Anki.
+ *
+ * `notesInfo` answers by ID — no search involved, so none of the query quirks
+ * that made us distrust search apply. It returns one entry per requested id,
+ * positionally aligned, and an EMPTY OBJECT for an id that no longer exists
+ * (AnkiConnect appends `{}` on its NotFoundError branch). Returns null when
+ * verification isn't possible, so callers can fail safe and keep trusting the
+ * local record rather than re-adding duplicates.
+ */
+async function existingNoteIds(ids: number[]): Promise<Set<number> | null> {
+  if (ids.length === 0) return new Set();
+  try {
+    const infos = await invoke<Record<string, unknown>[]>('notesInfo', {
+      notes: ids,
+    });
+    // A short/long response means the reply can't be trusted positionally.
+    if (!Array.isArray(infos) || infos.length !== ids.length) return null;
+    const alive = new Set<number>();
+    infos.forEach((info, i) => {
+      if (info && Object.keys(info).length > 0) alive.add(ids[i]!);
+    });
+    return alive;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Words collected by this app carry our tag; read their Front values.
+ * `ok` distinguishes "Anki has none" from "the query didn't work" — the
+ * caller may only conclude a note was deleted when the query actually ran.
+ */
+async function getTaggedWords(): Promise<{ words: Set<string>; ok: boolean }> {
   const words = new Set<string>();
   try {
     const noteIds = await invoke<number[]>('findNotes', {
@@ -147,29 +231,37 @@ async function getTaggedWords(): Promise<Set<string>> {
     }
   } catch {
     /* search unavailable — local record still covers the common case */
+    return { words, ok: false };
   }
-  return words;
+  return { words, ok: true };
 }
 
 /**
  * Push vocabulary entries into Anki.
  *
- * Duplicate semantics: scoped to the target deck, via TWO search-free
- * sources (Anki findCards proved unreliable in the field):
- *   1. localStorage record of words this app already synced to that deck.
- *   2. All notes tagged 听美剧学英语 — match on their first field value.
- * Words that exist only in OTHER decks are still added (Anki's global
- * per-note-type dedupe is bypassed via allowDuplicate: true).
+ * Duplicate semantics — the local record is authoritative for the target deck,
+ * but it is VERIFIED against Anki first so it can never go stale:
+ *   1. Entries carrying a `noteId` are checked with `notesInfo`. A note the
+ *      user deleted in Anki comes back as `{}` and is dropped from the record,
+ *      so its word is offered for sync again instead of being skipped forever.
+ *   2. Legacy entries (no `noteId`) fall back to the `tag:听美剧学英语` query —
+ *      when that query works, a word missing from its result was deleted.
+ *   3. If neither check is available the record is trusted as-is: never
+ *      re-add a duplicate just because verification failed.
  *
- * Note-type adaptation: the four card fields are written by NAME when the
+ * On top of that, any note this app has ever created carries our tag, and a
+ * word found there is treated as a duplicate regardless of deck — Anki's
+ * global per-note-type dedupe is otherwise bypassed via allowDuplicate: true.
+ *
+ * Note-type adaptation: the nine card fields are written by NAME when the
  * target model has them (our "听美剧学英语" template — see ankiTemplate.ts),
  * and positionally otherwise, so a user's own note type still receives as
  * much content as it can hold. addNotes results are checked for real —
  * nulls become failures with the reason surfaced.
  *
  * Entries are expected to be enriched first (see vocabEnrich.ts) so that
- * 单词释义 / 例句释义 are populated; missing values are written as empty
- * strings rather than dropping the note.
+ * 单词释义 / 例句释义 / the lexical metadata are populated; missing values are
+ * written as empty strings rather than dropping the note.
  */
 export async function syncVocabToAnki(
   entries: VocabWord[],
@@ -208,14 +300,50 @@ export async function syncVocabToAnki(
     );
   }
 
-  // 1) Deck-scoped duplicate pre-check (search-free sources only).
-  const syncedLocal = new Set(loadSyncedWords()[deck] ?? []);
-  const taggedWords = await getTaggedWords();
+  // 1) Deck-scoped duplicate pre-check. The local record is trusted, but it
+  //    is verified against Anki first so a note deleted in Anki stops
+  //    blocking its word forever.
+  const recorded = loadSyncedNotes()[deck] ?? [];
+  const tagged = await getTaggedWords();
+
+  const kept: SyncedNote[] = [];
+  const deletedInAnki: string[] = [];
+
+  // (a) Entries with a note id — ask Anki whether those notes still exist.
+  const withId = recorded.filter((r) => typeof r.noteId === 'number');
+  const withoutId = recorded.filter((r) => typeof r.noteId !== 'number');
+  if (withId.length > 0) {
+    const alive = await existingNoteIds(withId.map((r) => r.noteId!));
+    for (const r of withId) {
+      if (alive === null || alive.has(r.noteId!)) {
+        // alive === null → could not verify; keep it (fail safe, never
+        // re-add a duplicate just because the check was unavailable).
+        kept.push(r);
+      } else {
+        deletedInAnki.push(r.word);
+      }
+    }
+  }
+
+  // (b) Legacy entries written before note ids existed — the tag query is the
+  //     only handle on them, and only a query that actually ran can prove a
+  //     word is gone.
+  for (const r of withoutId) {
+    if (!tagged.ok || tagged.words.has(r.word)) {
+      kept.push(r);
+    } else {
+      deletedInAnki.push(r.word);
+    }
+  }
+
+  if (deletedInAnki.length > 0) forgetSynced(deck, deletedInAnki);
+  const syncedLocal = new Set(kept.map((r) => r.word));
+
   const toAdd: VocabWord[] = [];
   const duplicates: DuplicateInfo[] = [];
   for (const e of entries) {
     const key = e.word.trim().toLowerCase();
-    if (syncedLocal.has(key) || taggedWords.has(key)) {
+    if (syncedLocal.has(key) || tagged.words.has(key)) {
       duplicates.push({ word: e.surface, deck });
     } else {
       toAdd.push(e);
@@ -239,7 +367,7 @@ export async function syncVocabToAnki(
       if (typeof r === 'number') {
         added += 1;
         createdNoteIds.push(r);
-        saveSyncedWord(deck, toAdd[i]!.word.trim().toLowerCase());
+        rememberSynced(deck, toAdd[i]!.word.trim().toLowerCase(), r);
       } else {
         failed.push(toAdd[i]!.surface);
       }

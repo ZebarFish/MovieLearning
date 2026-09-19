@@ -54,7 +54,24 @@ function respondByAction(handler: (action: string) => unknown): void {
   });
 }
 
+const SYNCED_KEY = 'learnTV.anki.syncedWords.v1';
+
+/** Seed the app's synced-word record exactly as a given version wrote it. */
+function seedSyncedRecord(deck: string, value: unknown): void {
+  localStorage.setItem(SYNCED_KEY, JSON.stringify({ [deck]: value }));
+}
+
+function syncedRecordOf(deck: string): unknown {
+  return (
+    JSON.parse(localStorage.getItem(SYNCED_KEY) ?? '{}') as Record<
+      string,
+      unknown
+    >
+  )[deck];
+}
+
 beforeEach(() => {
+  localStorage.clear();
   Object.defineProperty(globalThis, 'fetch', { value: fetchMock, writable: true });
   fetchMock.mockReset();
 });
@@ -160,6 +177,83 @@ describe('syncVocabToAnki', () => {
     const second = await syncVocabToAnki([entry('apple')], '绝望主妇', 'Basic');
     expect(second.added).toBe(0);
     expect(second.duplicates).toEqual([{ word: 'apple', deck: '绝望主妇' }]);
+  });
+
+  it('re-adds a word whose note the user deleted in Anki', async () => {
+    // What a previous sync left behind: the note id it created, whose card
+    // the user has since deleted. AnkiConnect answers `{}` for a dead id.
+    seedSyncedRecord('绝望主妇', [{ word: 'errands', noteId: 501 }]);
+    respondByAction((action) => {
+      if (action === 'notesInfo') return [{}];
+      if (action === 'addNotes') return [601];
+      return [];
+    });
+
+    const result = await syncVocabToAnki([entry('errands')], '绝望主妇', 'Basic');
+
+    expect(result.added).toBe(1);
+    expect(result.duplicates).toEqual([]);
+    // The stale entry was replaced by the freshly created note id.
+    expect(syncedRecordOf('绝望主妇')).toEqual([
+      { word: 'errands', noteId: 601 },
+    ]);
+  });
+
+  it('still skips a word whose note really is still there', async () => {
+    seedSyncedRecord('绝望主妇', [{ word: 'apple', noteId: 501 }]);
+    respondByAction((action) => {
+      if (action === 'notesInfo') return [{ noteId: 501, cards: [7] }];
+      return [];
+    });
+
+    const result = await syncVocabToAnki([entry('apple')], '绝望主妇', 'Basic');
+
+    expect(result.added).toBe(0);
+    expect(result.duplicates).toEqual([{ word: 'apple', deck: '绝望主妇' }]);
+  });
+
+  it('re-adds legacy entries (no note id) once the tag query shows they are gone', async () => {
+    // The exact shape older versions wrote: a plain array of words. These are
+    // what a user upgrading mid-flight still has in localStorage.
+    seedSyncedRecord('绝望主妇', ['errands', 'chores']);
+    respondByAction((action) => (action === 'addNotes' ? [701, 702] : []));
+
+    const result = await syncVocabToAnki(
+      [entry('errands'), entry('chores')],
+      '绝望主妇',
+      'Basic',
+    );
+
+    expect(result.added).toBe(2);
+    expect(result.duplicates).toEqual([]);
+    expect(syncedRecordOf('绝望主妇')).toEqual([
+      { word: 'errands', noteId: 701 },
+      { word: 'chores', noteId: 702 },
+    ]);
+  });
+
+  it('keeps a legacy entry when the tag query itself fails (fail safe)', async () => {
+    seedSyncedRecord('绝望主妇', ['apple']);
+    // findNotes errors → we cannot know whether the note was deleted, so the
+    // record must still win rather than flooding Anki with duplicates.
+    fetchMock.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      if (body.action === 'findNotes') {
+        return {
+          ok: true,
+          json: () => Promise.resolve({ result: null, error: 'query failed' }),
+        };
+      }
+      if (body.action === 'deckNames') return res(['Default', '绝望主妇']);
+      if (body.action === 'modelNames') return res(['Basic']);
+      if (body.action === 'modelFieldNames') return res(['Front', 'Back']);
+      return res(null);
+    });
+
+    const result = await syncVocabToAnki([entry('apple')], '绝望主妇', 'Basic');
+
+    expect(result.added).toBe(0);
+    expect(result.duplicates).toEqual([{ word: 'apple', deck: '绝望主妇' }]);
   });
 
   it('short-circuits on empty vocabulary', async () => {
