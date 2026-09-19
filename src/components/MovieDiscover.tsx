@@ -555,8 +555,16 @@ export function MovieDiscover({ onStartLearning }: MovieDiscoverProps): JSX.Elem
             >
               themoviedb.org
             </Link>{' '}
-            免费申请（注册后进「设置 → API」选 v3 auth）。国内网络通常需要代理才能访问。
+            免费申请。注意要复制「API Key (v3 auth)」那一栏，不要复制「API Read Access
+            Token (v4 auth)」——本应用用的是前者。国内网络通常需要代理才能访问。
           </Typography>
+
+          {hasKey && (
+            <Typography variant="caption" color="text.secondary">
+              海报数据来源：TMDB。This product uses the TMDB API but is not endorsed or
+              certified by TMDB.
+            </Typography>
+          )}
 
           <Stack direction="row" spacing={1} alignItems="center">
             <TextField
