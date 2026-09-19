@@ -90,10 +90,22 @@ describe('chineseCueTextAt', () => {
 });
 
 describe('countPendingEnrichment', () => {
-  it('counts entries missing a definition or a translation', () => {
+  const complete = word({
+    definition: 'n. 家务',
+    translation: '我得做家务。',
+    meta: { oxford: true },
+  });
+
+  it('counts entries missing a definition, a translation or metadata', () => {
+    expect(countPendingEnrichment([word(), complete])).toBe(1);
+    expect(countPendingEnrichment([complete])).toBe(0);
+  });
+
+  it('counts an entry whose definition and translation are filled but whose metadata is not', () => {
+    // Entries collected before the lexical metadata existed must still be
+    // picked up, otherwise the new Anki fields would stay empty forever.
     expect(
       countPendingEnrichment([
-        word(),
         word({ definition: 'n. 家务', translation: '我得做家务。' }),
       ]),
     ).toBe(1);
@@ -154,7 +166,11 @@ describe('enrichVocab', () => {
   });
 
   it('leaves complete entries untouched (same object identity)', async () => {
-    const complete = word({ definition: 'n. 家务', translation: '我得做家务。' });
+    const complete = word({
+      definition: 'n. 家务',
+      translation: '我得做家务。',
+      meta: { oxford: true },
+    });
     const out = await enrichVocab([complete], { zhCues });
     expect(out[0]).toBe(complete);
     expect(fetchMock).not.toHaveBeenCalled();

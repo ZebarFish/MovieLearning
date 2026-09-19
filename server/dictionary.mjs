@@ -25,7 +25,7 @@
  *   GET /dict/offline/status        → { ready, count, builtAt }
  *   GET /dict/offline?w=<word>      → hit: 200 { word, phonetic, translation,
  *                                       definition, pos, collins, oxford, tag,
- *                                       bnc, frq, exchange }
+ *                                       bnc, frq, exchange, forms? }
  *                                     miss: 404 { found: false }
  *                                     empty w: 400
  *                                     no index: 503 { error: "index-not-built" }
@@ -212,21 +212,75 @@ function lemmaOf(exchange) {
 }
 
 /**
- * The IPA for a record. ECDICT auto-generated most inflected entries and
- * left their `phonetic` empty — `discovered` has none, while the `discover`
- * it comes from is `dis'kʌvə`. So when a record has no phonetic of its own
- * we borrow the lemma's, which is what a learner wants to see anyway (it is
- * the pronunciation of the whole word family).
+ * Decode ECDICT's `exchange` column into a `WordForms`-shaped object.
+ *
+ * The column is `type:word` segments joined by `/`. We keep only the real
+ * inflected forms and map their codes:
+ *   p  → past              · d  → pastParticiple
+ *   i  → presentParticiple · 3  → thirdPerson
+ *   s  → plural            · r  → comparative       · t  → superlative
+ * The `0:` (this entry's lemma) and `1:` (this entry's inflection type) codes
+ * are NOT inflected forms — the lemma is filled in by the caller, and `1:` is
+ * only metadata about *this* entry, so both are dropped here. `f` is rare and
+ * ignored too. Segment words are lower-cased to match the rest of the payload.
  */
-async function phoneticFor(fields) {
-  const own = fields[1] ?? '';
-  if (own) return own;
-  const lemma = lemmaOf(fields[10]);
-  if (!lemma) return '';
-  const row = await findRow(lemma);
-  if (row < 0) return '';
-  const lemmaFields = parseCsvLine(await readFullLine(row));
-  return lemmaFields[1] ?? '';
+function parseExchange(exchange) {
+  const forms = {};
+  for (const part of String(exchange ?? '').split('/')) {
+    if (!part) continue;
+    const sep = part.indexOf(':');
+    if (sep < 0) continue;
+    const type = part.slice(0, sep);
+    const word = part.slice(sep + 1).trim().toLowerCase();
+    if (!word) continue;
+    switch (type) {
+      case 'p': forms.past = word; break;
+      case 'd': forms.pastParticiple = word; break;
+      case 'i': forms.presentParticiple = word; break;
+      case '3': forms.thirdPerson = word; break;
+      case 's': forms.plural = word; break;
+      case 'r': forms.comparative = word; break;
+      case 't': forms.superlative = word; break;
+      // 0 (lemma) and 1 (this form's type) are handled by the caller; f ignored.
+      default: break;
+    }
+  }
+  return forms;
+}
+
+/**
+ * Produce both the IPA and the full inflection set for an ECDICT record,
+ * reading the lemma row at most once (so `discovered` borrows `discover`'s
+ * phonetic AND gets `discover`'s complete paradigm in a single lookup).
+ *
+ * - When the entry has a lemma (`0:` segment), the lemma's own `exchange`
+ *   is the authoritative paradigm (`p/d/i/3/...`); we attach `lemma` and the
+ *   lemma's inflections. The lemma itself has no `0:` segment, so there is no
+ *   further recursion.
+ * - When the entry has no lemma (a base form like `chore`), its own
+ *   `exchange` is the paradigm and no `lemma` key is emitted.
+ * - If the resolved forms object has no keys at all, `forms` stays omitted
+ *   from the response (the caller drops it).
+ */
+async function metaFor(fields) {
+  const ownPhonetic = fields[1] ?? '';
+  const ownExchange = fields[10] ?? '';
+  const lemma = lemmaOf(ownExchange);
+
+  if (lemma) {
+    const row = await findRow(lemma);
+    let paradigm = {};
+    let lemmaPhonetic = '';
+    if (row >= 0) {
+      const lemmaFields = parseCsvLine(await readFullLine(row));
+      paradigm = parseExchange(lemmaFields[10] ?? '');
+      lemmaPhonetic = lemmaFields[1] ?? '';
+    }
+    return { forms: { lemma, ...paradigm }, phonetic: ownPhonetic || lemmaPhonetic };
+  }
+
+  // No lemma of its own — use this entry's inflections directly (no lemma key).
+  return { forms: parseExchange(ownExchange), phonetic: ownPhonetic };
 }
 
 async function handle(req, res, next) {
@@ -263,9 +317,10 @@ async function handle(req, res, next) {
       return;
     }
     const fields = parseCsvLine(await readFullLine(idx));
+    const { forms, phonetic } = await metaFor(fields);
     sendJson(res, 200, {
       word: fields[0] ?? '',
-      phonetic: await phoneticFor(fields),
+      phonetic,
       translation: fields[3] ?? '',
       definition: fields[2] ?? '',
       pos: fields[4] ?? '',
@@ -275,6 +330,8 @@ async function handle(req, res, next) {
       bnc: fields[8] ?? '',
       frq: fields[9] ?? '',
       exchange: fields[10] ?? '',
+      // Only present when at least one inflection is known.
+      ...(Object.keys(forms).length > 0 ? { forms } : {}),
     });
     return;
   }

@@ -48,6 +48,47 @@ export interface SubtitleTrack {
 /** Which subtitle tracks are currently visible on the video overlay. */
 export type SubtitleDisplayMode = 'none' | 'en' | 'zh' | 'both';
 
+/**
+ * Inflected forms of a word, decoded from ECDICT's `exchange` column.
+ * Every key is optional — only inflections ECDICT actually lists are filled.
+ */
+export interface WordForms {
+  /** The base form this entry inflects from (ECDICT `0:` segment). */
+  lemma?: string;
+  past?: string;
+  pastParticiple?: string;
+  presentParticiple?: string;
+  thirdPerson?: string;
+  plural?: string;
+  comparative?: string;
+  superlative?: string;
+}
+
+/** Extra lexical metadata ECDICT ships with a word, beyond its definition. */
+export interface WordMeta {
+  /** IPA. Filled from the lemma's record when the entry has none of its own. */
+  phonetic?: string;
+  /** English (WordNet-style) definition. */
+  definition?: string;
+  /** BNC part-of-speech ratios, e.g. "n:41/v:59". */
+  pos?: string;
+  /** Collins star rating, 1–5. */
+  collins?: number;
+  /** True when the word is on the Oxford 3000 core list. */
+  oxford?: boolean;
+  /** Exam syllabi the word belongs to, e.g. ['gk', 'cet4']. */
+  tags?: string[];
+  /** BNC corpus frequency rank (1 = most common). */
+  bnc?: number;
+  /** Contemporary corpus frequency rank. */
+  frq?: number;
+  /** Inflections. */
+  forms?: WordForms;
+}
+
+/** Exam-syllabus codes ECDICT uses in its `tag` column. */
+export type ExamTag = 'zk' | 'gk' | 'cet4' | 'cet6' | 'ky' | 'toefl' | 'ielts' | 'gre';
+
 /** A single vocabulary entry collected by the user. */
 export interface VocabWord {
   /** The English word (lowercase, normalized). */
@@ -75,9 +116,9 @@ export interface VocabWord {
    * subtitle track when one is loaded, otherwise machine-translated.
    */
   translation?: string;
+  /** Extra lexical metadata (ECDICT fields beyond the definition). */
+  meta?: WordMeta;
 }
-
-/** A-B loop marker state. */
 export interface ABLoopState {
   /** Point A in seconds, or null if not set. */
   pointA: number | null;

@@ -13,7 +13,7 @@
  *   - clearAll    : wipe the vocabulary
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { SubtitleLang, VocabWord } from '../types';
+import type { SubtitleLang, VocabWord, WordMeta } from '../types';
 
 const STORAGE_KEY = 'learnTV.vocab.v1';
 
@@ -37,6 +37,12 @@ interface AddWordArgs {
   definition?: string;
   /** 例句释义 — Chinese translation of `sentence`, if known. */
   translation?: string;
+  /**
+   * Extra lexical metadata (ECDICT: 音标 / 英文释义 / 词性分布 / 词形变化 /
+   * 词汇标记 …) captured from the word detail card. Optional — entries
+   * collected before this existed get it backfilled by `vocabEnrich`.
+   */
+  meta?: WordMeta;
 }
 
 interface UseVocabularyResult {
@@ -103,6 +109,7 @@ export function useVocabulary(): UseVocabularyResult {
       lang,
       definition,
       translation,
+      meta,
     }: AddWordArgs): boolean => {
       const cleaned = cleanSurface(word);
       if (!cleaned) {
@@ -122,6 +129,7 @@ export function useVocabulary(): UseVocabularyResult {
         lang,
         ...(definition?.trim() ? { definition: definition.trim() } : {}),
         ...(translation?.trim() ? { translation: translation.trim() } : {}),
+        ...(meta && Object.keys(meta).length > 0 ? { meta } : {}),
       };
       setVocab((prev) => [entry, ...prev]);
       return true;

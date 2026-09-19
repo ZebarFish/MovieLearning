@@ -12,6 +12,7 @@
  * the offline and the online path.
  */
 import { USE_LOCAL_PROXY } from './localProxy';
+import type { WordForms, WordMeta } from '../types';
 
 export interface DictionaryMeaning {
   partOfSpeech: string;
@@ -29,6 +30,8 @@ export interface WordDefinition {
   meanings: DictionaryMeaning[];
   /** The surface form the user clicked, when it differed from `word`. */
   queried?: string;
+  /** Extra lexical metadata (ECDICT fields beyond the definition). */
+  meta?: WordMeta;
 }
 
 interface RawDefinition {
@@ -92,6 +95,22 @@ interface OfflineEntry {
   translation?: string;
   /** English definitions, same literal-`\n` convention. */
   definition?: string;
+  /** BNC part-of-speech ratios, e.g. "n:41/v:59". */
+  pos?: string;
+  /** Collins star rating, "1"–"5", or "" when absent. */
+  collins?: string;
+  /** "1" when on the Oxford 3000 core list, otherwise "". */
+  oxford?: string;
+  /** Space-separated exam-syllabus tags, or "". */
+  tag?: string;
+  /** BNC frequency rank as a string, "0" = unranked. */
+  bnc?: string;
+  /** Contemporary-corpus frequency rank as a string, "0" = unranked. */
+  frq?: string;
+  /** Inflected forms, decoded server-side from ECDICT's `exchange`. */
+  exchange?: string;
+  /** Inflected forms. May be omitted entirely when nothing is known. */
+  forms?: WordForms;
 }
 
 /**
@@ -100,6 +119,19 @@ interface OfflineEntry {
  * This is that two-character sequence, not an escape for a newline.
  */
 const ECDICT_LINE_SEP = '\\n';
+
+/**
+ * Turn ECDICT's literal `\n` separators into real newlines, dropping blank
+ * lines. Without this the raw two-character sequence would surface verbatim
+ * on the word card and on the Anki 英文释义 field.
+ */
+function normalizeEcdictText(value: string): string {
+  return value
+    .split(ECDICT_LINE_SEP)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
 
 /**
  * ECDICT phonetics come in several shapes: `ˈfjuːnərəl`, `[ˈænɪməl]`, and
@@ -158,11 +190,67 @@ function offlineEntryToDefinition(entry: OfflineEntry): WordDefinition | null {
     .filter((m) => m.definitions.length > 0);
   if (meanings.length === 0) return null;
 
+  const clean = cleanPhonetic(entry.phonetic);
+  const meta = entryToMeta(entry, clean);
+
   return {
     word: (entry.word ?? '').trim(),
-    phonetic: cleanPhonetic(entry.phonetic),
+    phonetic: clean,
     meanings,
+    ...(meta ? { meta } : {}),
   };
+}
+
+/**
+ * Convert an ECDICT offline record into `WordMeta`, dropping empty/meaningless
+ * fields. Conservative by design: every value is validated before it is kept,
+ * and an all-empty result collapses to `undefined` so callers never store a
+ * hollow `meta` object.
+ *
+ * @param cleanPhonetic the already-cleaned IPA (reused, never re-parsed).
+ */
+function entryToMeta(entry: OfflineEntry, clean?: string): WordMeta | undefined {
+  const meta: WordMeta = {};
+
+  if (clean) meta.phonetic = clean;
+
+  const definition = normalizeEcdictText(entry.definition ?? '');
+  if (definition) meta.definition = definition;
+
+  const pos = (entry.pos ?? '').trim();
+  if (pos) meta.pos = pos;
+
+  const collins = (entry.collins ?? '').trim();
+  if (collins) {
+    const n = Number(collins);
+    if (Number.isFinite(n) && n >= 1 && n <= 5) meta.collins = n;
+  }
+
+  if ((entry.oxford ?? '') === '1') meta.oxford = true;
+
+  const tags = (entry.tag ?? '')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (tags.length > 0) meta.tags = tags;
+
+  const bncRaw = (entry.bnc ?? '').trim();
+  if (bncRaw) {
+    const n = Number(bncRaw);
+    if (Number.isFinite(n) && n !== 0) meta.bnc = n;
+  }
+
+  const frqRaw = (entry.frq ?? '').trim();
+  if (frqRaw) {
+    const n = Number(frqRaw);
+    if (Number.isFinite(n) && n !== 0) meta.frq = n;
+  }
+
+  if (entry.forms && Object.keys(entry.forms).length > 0) {
+    meta.forms = entry.forms;
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
 /**

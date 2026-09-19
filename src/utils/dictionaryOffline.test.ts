@@ -247,4 +247,193 @@ describe('offline-first lookup', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('surfaces all ECDICT meta fields with the right (non-string) types', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u === '/dict/offline?w=discovered') {
+        return ok(
+          offlineEntry({
+            word: 'discovered',
+            phonetic: "dis'kʌvә",
+            translation: 'v. 发现, 找到（discover的过去形式）',
+            definition: 'v discover or determine the existence...',
+            pos: 'v:100',
+            collins: '5',
+            oxford: '1',
+            tag: 'gk cet4',
+            bnc: '49',
+            frq: '47',
+            exchange: '0:discover/1:pd',
+            forms: {
+              lemma: 'discover',
+              past: 'discovered',
+              pastParticiple: 'discovered',
+              presentParticiple: 'discovering',
+              thirdPerson: 'discovers',
+            },
+          }),
+        );
+      }
+      throw new Error(`unexpected network call: ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const result = await lookupWord('discovered');
+
+    expect(result).not.toBeNull();
+    const meta = result!.meta!;
+    // Types are converted away from the raw strings.
+    expect(typeof meta.collins).toBe('number');
+    expect(meta.collins).toBe(5);
+    expect(typeof meta.oxford).toBe('boolean');
+    expect(meta.oxford).toBe(true);
+    expect(Array.isArray(meta.tags)).toBe(true);
+    expect(meta.tags).toEqual(['gk', 'cet4']);
+    expect(typeof meta.bnc).toBe('number');
+    expect(meta.bnc).toBe(49);
+    expect(typeof meta.frq).toBe('number');
+    expect(meta.frq).toBe(47);
+    expect(meta.pos).toBe('v:100');
+    // forms carries the full paradigm resolved from the lemma.
+    expect(meta.forms).toEqual({
+      lemma: 'discover',
+      past: 'discovered',
+      pastParticiple: 'discovered',
+      presentParticiple: 'discovering',
+      thirdPerson: 'discovers',
+    });
+    // Still purely offline — the online APIs were never contacted.
+    expect(
+      urlsOf(fetchMock).every((u) => u.startsWith('/dict/offline')),
+    ).toBe(true);
+  });
+
+  it('normalises the English definition: literal \\n becomes a real newline', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u === '/dict/offline?w=quay') {
+        return ok(
+          offlineEntry({
+            word: 'quay',
+            phonetic: '',
+            translation: '',
+            definition: 'n. a platform lying alongside water\\nvt. to dock a vessel',
+          }),
+        );
+      }
+      throw new Error(`unexpected network call: ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const meta = (await lookupWord('quay'))!.meta!;
+
+    expect(meta.definition).toBe('n. a platform lying alongside water\nvt. to dock a vessel');
+    expect(meta.definition).not.toContain('\\n');
+  });
+
+  it('omits meta keys whose raw value is empty / zero (no undefined placeholders)', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u === '/dict/offline?w=discovered') {
+        return ok(
+          offlineEntry({
+            word: 'discovered',
+            phonetic: "dis'kʌvә",
+            translation: 'v. 发现, 找到（discover的过去形式）',
+            collins: '',
+            oxford: '',
+            tag: '',
+            bnc: '0',
+            frq: '0',
+            exchange: '0:discover/1:pd',
+            forms: {
+              lemma: 'discover',
+              past: 'discovered',
+              pastParticiple: 'discovered',
+              presentParticiple: 'discovering',
+              thirdPerson: 'discovers',
+            },
+          }),
+        );
+      }
+      throw new Error(`unexpected network call: ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const result = await lookupWord('discovered');
+
+    const meta = result!.meta!;
+    expect(meta).toBeDefined();
+    expect(meta.collins).toBeUndefined();
+    expect(meta.oxford).toBeUndefined();
+    expect(meta.tags).toBeUndefined();
+    expect(meta.bnc).toBeUndefined();
+    expect(meta.frq).toBeUndefined();
+    // lemma-derived forms still resolve, so meta is not empty.
+    expect(meta.forms!.lemma).toBe('discover');
+  });
+
+  it('leaves meta.forms undefined when the server sends no forms', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u === '/dict/offline?w=furniture') {
+        return ok(
+          offlineEntry({
+            // No `forms` key at all — as the server omits it for empty paradigms.
+            collins: '2',
+            oxford: '1',
+            tag: 'cet4 cet6 ky',
+            bnc: '2135',
+            frq: '1928',
+          } as Record<string, unknown>),
+        );
+      }
+      throw new Error(`unexpected network call: ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const result = await lookupWord('furniture');
+
+    expect(result!.meta!.forms).toBeUndefined();
+    // Other fields still convert.
+    expect(result!.meta!.collins).toBe(2);
+  });
+
+  it('never reaches dictionaryapi.dev, dict.youdao.com or datamuse', async () => {
+    const seen: string[] = [];
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      seen.push(u);
+      if (u === '/dict/offline?w=discovered') {
+        return ok(
+          offlineEntry({
+            word: 'discovered',
+            phonetic: "dis'kʌvә",
+            translation: 'v. 发现, 找到（discover的过去形式）',
+            forms: {
+              lemma: 'discover',
+              past: 'discovered',
+              pastParticiple: 'discovered',
+              presentParticiple: 'discovering',
+              thirdPerson: 'discovers',
+            },
+          }),
+        );
+      }
+      throw new Error(`unexpected network call: ${u}`);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    await lookupWord('discovered');
+
+    expect(
+      seen.some(
+        (u) =>
+          u.includes('dictionaryapi.dev') ||
+          u.includes('dict.youdao.com') ||
+          u.includes('datamuse'),
+      ),
+    ).toBe(false);
+  });
 });

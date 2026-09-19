@@ -204,6 +204,15 @@ describe('buildNoteFields', () => {
     ...entry('chores'),
     definition: 'n. 家务活',
     translation: '我得做家务。',
+    meta: {
+      phonetic: 'tʃɔːz',
+      definition: 'a routine task',
+      pos: 'n:100',
+      collins: 3,
+      tags: ['cet4'],
+      bnc: 2135,
+      forms: { lemma: 'chore', plural: 'chores' },
+    },
   };
 
   it('fills the built-in note type by field name', () => {
@@ -212,7 +221,22 @@ describe('buildNoteFields', () => {
       单词释义: 'n. 家务活',
       例句: 'This is chores.',
       例句释义: '我得做家务。',
+      音标: 'tʃɔːz',
+      英文释义: 'a routine task',
+      词形变化: '原形 chore · 复数 chores',
+      词性分布: 'n:100',
+      词汇标记: '柯林斯★★★ · 四级 · BNC 2135',
     });
+  });
+
+  it('writes empty strings (never undefined) for fields with no metadata', () => {
+    const bare = buildNoteFields([...ANKI_FIELDS], entry('chores'));
+    expect(bare['音标']).toBe('');
+    expect(bare['英文释义']).toBe('');
+    expect(bare['词形变化']).toBe('');
+    expect(bare['词性分布']).toBe('');
+    expect(bare['词汇标记']).toBe('');
+    expect(Object.values(bare).every((v) => typeof v === 'string')).toBe(true);
   });
 
   it('maps positionally onto a foreign four-field model', () => {
@@ -259,7 +283,7 @@ describe('ensureAnkiModel', () => {
     return calls;
   }
 
-  it('creates the note type with the four fields and the TTS card', async () => {
+  it('creates the note type with the nine fields and the TTS card', async () => {
     const calls = trackCalls({ modelNames: () => ['Basic'] });
 
     const status = await ensureAnkiModel();
@@ -277,7 +301,9 @@ describe('ensureAnkiModel', () => {
     expect(create.params.modelName).toBe(ANKI_MODEL_NAME);
     expect(create.params.inOrderFields).toEqual(ANKI_FIELDS);
     expect(create.params.cardTemplates[0]!.Front).toContain('{{tts en_US:单词}}');
+    expect(create.params.cardTemplates[0]!.Front).toContain('{{音标}}');
     expect(create.params.cardTemplates[0]!.Back).toContain('{{例句释义}}');
+    expect(create.params.cardTemplates[0]!.Back).toContain('{{词汇标记}}');
   });
 
   it('adds only the missing fields to an existing copy', async () => {
@@ -291,7 +317,14 @@ describe('ensureAnkiModel', () => {
     const status = await ensureAnkiModel();
 
     expect(status.created).toBe(false);
-    expect(status.addedFields).toEqual(['例句释义']);
+    expect(status.addedFields).toEqual([
+      '例句释义',
+      '音标',
+      '英文释义',
+      '词形变化',
+      '词性分布',
+      '词汇标记',
+    ]);
     expect(status.templatesUpdated).toBe(true);
 
     const add = calls.find((c) => c['action'] === 'modelFieldAdd') as {
@@ -299,6 +332,47 @@ describe('ensureAnkiModel', () => {
     };
     expect(add.params.fieldName).toBe('例句释义');
     expect(add.params.index).toBe(3);
+  });
+
+  it('upgrades a pre-existing four-field template to the nine-field one', async () => {
+    // Exactly what an older release of this app installed: the original four
+    // sections and the TTS line, but none of the dictionary-derived ones.
+    const oldFront = `<div class="word">{{单词}}</div>
+<div class="sound">{{tts en_US:单词}}</div>`;
+    const oldBack = `{{FrontSide}}
+
+<hr id="answer">
+
+<div class="section">
+  <div class="label">单词释义</div>
+  <div class="value">{{单词释义}}</div>
+</div>
+
+<div class="section">
+  <div class="label">例句</div>
+  <div class="value sentence">{{例句}}</div>
+</div>
+
+<div class="section">
+  <div class="label">例句释义</div>
+  <div class="value">{{例句释义}}</div>
+</div>`;
+
+    const calls = trackCalls({
+      modelNames: () => [ANKI_MODEL_NAME],
+      modelFieldNames: () => [...ANKI_FIELDS],
+      modelTemplates: () => ({
+        [CARD_NAME]: { Front: oldFront, Back: oldBack },
+      }),
+      modelStyling: () => ({ css: '.word { color: red; }' }),
+    });
+
+    const status = await ensureAnkiModel();
+
+    expect(status.templatesUpdated).toBe(true);
+    expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(true);
+    // Fields were already present, so nothing is added — only the template.
+    expect(status.addedFields).toEqual([]);
   });
 
   it('leaves a healthy template and styling untouched', async () => {
@@ -337,7 +411,7 @@ describe('ensureAnkiModel', () => {
 });
 
 describe('syncVocabToAnki with the built-in note type', () => {
-  it('writes all four fields (definition and translation included)', async () => {
+  it('writes all nine fields, dictionary metadata included', async () => {
     const calls: Record<string, unknown>[] = [];
     fetchMock.mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as {
@@ -370,7 +444,19 @@ describe('syncVocabToAnki with the built-in note type', () => {
     });
 
     const result = await syncVocabToAnki(
-      [{ ...entry('chores'), definition: 'n. 家务活', translation: '我得做家务。' }],
+      [
+        {
+          ...entry('chores'),
+          definition: 'n. 家务活',
+          translation: '我得做家务。',
+          meta: {
+            phonetic: 'tʃɔːz',
+            definition: 'a routine task',
+            pos: 'n:100',
+            forms: { lemma: 'chore', plural: 'chores' },
+          },
+        },
+      ],
       '绝望主妇',
       ANKI_MODEL_NAME,
     );
@@ -384,6 +470,11 @@ describe('syncVocabToAnki with the built-in note type', () => {
       单词释义: 'n. 家务活',
       例句: 'This is chores.',
       例句释义: '我得做家务。',
+      音标: 'tʃɔːz',
+      英文释义: 'a routine task',
+      词形变化: '原形 chore · 复数 chores',
+      词性分布: 'n:100',
+      词汇标记: '',
     });
   });
 

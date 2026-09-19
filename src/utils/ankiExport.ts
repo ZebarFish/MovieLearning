@@ -6,13 +6,17 @@
  * "听美剧学英语" note type created by ankiTemplate.ts, so the same content
  * ends up on the card whether it was synced or imported:
  *
- *   单词 | 单词释义 | 例句 | 例句释义 | tags
+ *   单词 | 单词释义 | 例句 | 例句释义 | 音标 | 英文释义 | 词形变化 | 词性分布 |
+ *   词汇标记 | tags
  *
- * `#tags column:5` tells Anki the last column is tags. Values are
+ * The `#tags column:<n>` directive is derived from the field list rather than
+ * hard-coded, so it cannot drift when the note type gains fields. Values are
  * HTML-escaped and newlines become <br>, so multi-line definitions survive
  * the TSV round-trip without breaking the column layout.
  */
 import type { VocabWord } from '../types';
+import { ANKI_FIELDS } from './ankiTemplate';
+import { formatForms, formatLexicalTags } from './wordMeta';
 
 /** Make a value safe for one TSV cell (no tabs/newlines, HTML escaped). */
 export function escapeCell(value: string): string {
@@ -32,7 +36,9 @@ export const EXPORT_TAG = '听美剧学英语';
 export function buildAnkiText(entries: VocabWord[]): string {
   if (entries.length === 0) return '';
 
-  const directives = '#separator:tab\n#html:true\n#tags column:5\n\n';
+  // The nine card fields, plus the trailing tags column.
+  const tagsColumn = ANKI_FIELDS.length + 1;
+  const directives = `#separator:tab\n#html:true\n#tags column:${tagsColumn}\n\n`;
 
   const rows = entries.map((entry) => {
     const tags = [EXPORT_TAG, entry.video.replace(/[^\w-]+/g, '_')]
@@ -43,6 +49,11 @@ export function buildAnkiText(entries: VocabWord[]): string {
       escapeCell(entry.definition ?? ''),
       escapeCell(entry.sentence),
       escapeCell(entry.translation ?? ''),
+      escapeCell(entry.meta?.phonetic ?? ''),
+      escapeCell(entry.meta?.definition ?? ''),
+      escapeCell(formatForms(entry.meta)),
+      escapeCell(entry.meta?.pos ?? ''),
+      escapeCell(formatLexicalTags(entry.meta)),
       tags,
     ].join('\t');
   });

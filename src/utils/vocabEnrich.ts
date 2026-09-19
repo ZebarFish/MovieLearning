@@ -1,18 +1,24 @@
 /**
  * vocabEnrich.ts
  *
- * Fills in the two card fields that are not known at collection time:
+ * Fills in the card content that is not known at collection time:
  *
- *   单词释义  the word's definition  → dictionary lookup
- *   例句释义  the sentence's Chinese → the ZH subtitle track, else machine
- *                                     translation
+ *   单词释义  the word's definition   → dictionary lookup
+ *   例句释义  the sentence's Chinese  → the ZH subtitle track, else machine
+ *                                      translation
+ *   meta      the lexical metadata    → the same dictionary lookup (音标 /
+ *             英文释义 / 词性分布 / 词形变化 / 词汇标记 …)
  *
  * Enrichment is idempotent and only touches entries that are still missing
- * a field, so it is safe to run before every sync: already-filled entries
+ * something, so it is safe to run before every sync: already-complete entries
  * cost nothing, and the caller persists the result so the work is done once.
+ *
+ * `meta` became part of "complete" when the richer Anki note type landed, so
+ * entries collected before that are backfilled on the next sync.
  */
-import type { SubtitleCue, VocabWord } from '../types';
+import type { SubtitleCue, VocabWord, WordMeta } from '../types';
 import { formatDefinition, lookupWord } from './dictionary';
+import { toWordMeta } from './wordMeta';
 import { hasChinese, translateToChinese } from './translate';
 
 export interface EnrichOptions {
@@ -69,10 +75,16 @@ export function chineseCueTextAt(
   return text && hasChinese(text) ? text : null;
 }
 
+/** Metadata worth storing — an empty object carries no information. */
+function usefulMeta(meta: WordMeta | undefined): WordMeta | undefined {
+  return meta && Object.keys(meta).length > 0 ? meta : undefined;
+}
+
 /** Entries that still need a dictionary lookup and/or a translation. */
 export function countPendingEnrichment(entries: VocabWord[]): number {
   return entries.filter(
-    (e) => !e.definition?.trim() || !e.translation?.trim(),
+    (e) =>
+      !e.definition?.trim() || !e.translation?.trim() || !usefulMeta(e.meta),
   ).length;
 }
 
@@ -92,7 +104,10 @@ export async function enrichVocab(
   const pending = entries
     .map((entry, index) => ({ entry, index }))
     .filter(
-      ({ entry }) => !entry.definition?.trim() || !entry.translation?.trim(),
+      ({ entry }) =>
+        !entry.definition?.trim() ||
+        !entry.translation?.trim() ||
+        !usefulMeta(entry.meta),
     );
 
   const total = pending.length;
@@ -109,6 +124,7 @@ export async function enrichVocab(
 
       let translation = entry.translation?.trim() || undefined;
       let definition = entry.definition?.trim() || undefined;
+      let meta = usefulMeta(entry.meta);
 
       if (!translation && entry.sentence.trim()) {
         translation =
@@ -117,16 +133,25 @@ export async function enrichVocab(
           undefined;
       }
 
-      if (!definition) {
+      // A single lookup feeds both 单词释义 and the lexical metadata.
+      if (!definition || !meta) {
         const def = await lookupWord(entry.word);
-        if (def) definition = formatDefinition(def) || undefined;
+        if (def) {
+          if (!definition) definition = formatDefinition(def) || undefined;
+          if (!meta) meta = usefulMeta(toWordMeta(def));
+        }
       }
 
-      if (translation !== entry.translation || definition !== entry.definition) {
+      if (
+        translation !== entry.translation ||
+        definition !== entry.definition ||
+        meta !== entry.meta
+      ) {
         result[index] = {
           ...entry,
           ...(definition ? { definition } : {}),
           ...(translation ? { translation } : {}),
+          ...(meta ? { meta } : {}),
         };
       }
 

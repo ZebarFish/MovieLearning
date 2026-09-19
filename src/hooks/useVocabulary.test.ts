@@ -200,6 +200,66 @@ describe('useVocabulary', () => {
     expect(readStorage()[0].translation).toBe('我得做家务。');
   });
 
+  it('stores the lexical metadata supplied at collection time', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({
+        word: 'chores',
+        sentence: 'I have to do the chores.',
+        video: 'v',
+        time: 5,
+        meta: { phonetic: 'tʃɔːz', collins: 3, tags: ['cet4'] },
+      });
+    });
+
+    expect(result.current.vocab[0].meta).toEqual({
+      phonetic: 'tʃɔːz',
+      collins: 3,
+      tags: ['cet4'],
+    });
+    expect(readStorage()[0].meta!.phonetic).toBe('tʃɔːz');
+  });
+
+  it('omits the meta key when none is supplied', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({ word: 'plain', sentence: 's', video: 'v', time: 0 });
+    });
+    expect('meta' in result.current.vocab[0]).toBe(false);
+  });
+
+  it('omits an empty meta object rather than storing a hollow one', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({
+        word: 'hollow',
+        sentence: 's',
+        video: 'v',
+        time: 0,
+        meta: {},
+      });
+    });
+    expect('meta' in result.current.vocab[0]).toBe(false);
+  });
+
+  it('updateWord merges a backfilled meta into an existing entry', () => {
+    const { result } = renderHook(() => useVocabulary());
+    act(() => {
+      result.current.addWord({ word: 'chores', sentence: 's', video: 'v', time: 5 });
+    });
+
+    act(() => {
+      result.current.updateWord({
+        ...result.current.vocab[0],
+        definition: 'n. 家务活',
+        meta: { phonetic: 'tʃɔːz' },
+      });
+    });
+
+    expect(result.current.vocab[0].meta).toEqual({ phonetic: 'tʃɔːz' });
+    expect(readStorage()[0].meta!.phonetic).toBe('tʃɔːz');
+  });
+
   it('omits blank definition / translation rather than storing empty strings', () => {
     const { result } = renderHook(() => useVocabulary());
     act(() => {

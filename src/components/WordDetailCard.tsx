@@ -22,8 +22,9 @@ import {
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
-import type { SubtitleLang } from '../types';
+import type { SubtitleLang, WordMeta } from '../types';
 import { formatDefinition, lookupWord, type WordDefinition } from '../utils/dictionary';
+import { formatForms, metaBadges, toWordMeta } from '../utils/wordMeta';
 import { speak } from '../utils/tts';
 
 interface WordDetailCardProps {
@@ -32,8 +33,12 @@ interface WordDetailCardProps {
   lang: SubtitleLang;
   isCollected: boolean;
   onClose: () => void;
-  /** `definition` is the 单词释义 shown here, so the card it creates keeps it. */
-  onCollect: (definition?: string) => void;
+  /**
+   * `definition` is the 单词释义 shown here and `meta` the extra lexical
+   * metadata — handing both over means the collected entry needs no second
+   * lookup before it can be written into Anki.
+   */
+  onCollect: (definition?: string, meta?: WordMeta) => void;
   onUncollect: () => void;
 }
 
@@ -63,14 +68,21 @@ export function WordDetailCard({
     };
   }, [word]);
 
+  const badges = def ? metaBadges(def.meta) : [];
+  const forms = def ? formatForms(def.meta) : '';
+
   const handleSpeak = (): void => {
     speak(word, { lang: 'en-US', rate: 0.85 });
   };
 
-  // Hand the definition we already fetched to the vocabulary entry, so the
-  // Anki card's 单词释义 field is populated without a second lookup.
+  // Hand the definition and metadata we already fetched to the vocabulary
+  // entry, so the Anki card's 单词释义 / 音标 / 词形变化 / 词汇标记 fields are
+  // populated without a second lookup.
   const handleCollect = (): void => {
-    onCollect(def ? formatDefinition(def) || undefined : undefined);
+    onCollect(
+      def ? formatDefinition(def) || undefined : undefined,
+      def ? toWordMeta(def) : undefined,
+    );
   };
 
   return (
@@ -125,6 +137,35 @@ export function WordDetailCard({
                   sx={{ mt: 0.5, fontFamily: 'Georgia, serif' }}
                 >
                   {def.phonetic}
+                </Typography>
+              )}
+              {!loading && badges.length > 0 && (
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  flexWrap="wrap"
+                  useFlexGap
+                  sx={{ mt: 0.75 }}
+                  data-testid="word-meta-badges"
+                >
+                  {badges.map((badge) => (
+                    <Chip
+                      key={badge}
+                      label={badge}
+                      size="small"
+                      variant="outlined"
+                    />
+                  ))}
+                </Stack>
+              )}
+              {!loading && forms && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: 'block', mt: 0.75, lineHeight: 1.5 }}
+                  data-testid="word-forms"
+                >
+                  {forms}
                 </Typography>
               )}
               {!loading && def && def.queried && def.queried !== def.word && (
@@ -192,6 +233,25 @@ export function WordDetailCard({
                   </Box>
                 ))}
               </Stack>
+            </>
+          )}
+
+          {def?.meta?.definition && (
+            <>
+              <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
+                英文释义
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{
+                  whiteSpace: 'pre-wrap',
+                  color: 'text.secondary',
+                  lineHeight: 1.6,
+                }}
+                data-testid="word-en-definition"
+              >
+                {def.meta.definition}
+              </Typography>
             </>
           )}
         </Box>

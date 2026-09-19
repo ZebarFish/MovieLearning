@@ -487,8 +487,8 @@ export function VocabularyPanel({
         )}
         {!conn?.ok && (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-            导出的 .txt 含 单词 / 单词释义 / 例句 / 例句释义 四列，可在 Anki 中「文件 → 导入」，
-            导入时选「听美剧学英语」笔记类型即可。
+            导出的 .txt 含 {ANKI_FIELDS.join(' / ')} 共 {ANKI_FIELDS.length} 列，可在 Anki 中
+            「文件 → 导入」，导入时选「听美剧学英语」笔记类型即可。
           </Typography>
         )}
       </Box>

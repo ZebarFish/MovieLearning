@@ -27,25 +27,65 @@ describe('buildAnkiText', () => {
     expect(buildAnkiText([])).toBe('');
   });
 
-  it('emits a directive header that maps the five columns', () => {
+  it('emits a directive header that maps the ten columns', () => {
     const text = buildAnkiText([entry()]);
-    expect(text.startsWith('#separator:tab\n#html:true\n#tags column:5\n\n')).toBe(
+    expect(text.startsWith('#separator:tab\n#html:true\n#tags column:10\n\n')).toBe(
       true,
     );
   });
 
-  it('emits the four card fields plus a tags column', () => {
+  it('emits the nine card fields plus a tags column', () => {
     const text = buildAnkiText([
       entry({ definition: 'n. 你好', translation: '你好，世界！' }),
     ]);
     expect(rows(text)).toEqual([
-      ['Hello', 'n. 你好', 'Hello, world!', '你好，世界！', '听美剧学英语 episode-01_mp4'],
+      [
+        'Hello',
+        'n. 你好',
+        'Hello, world!',
+        '你好，世界！',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '听美剧学英语 episode-01_mp4',
+      ],
+    ]);
+  });
+
+  it('fills the dictionary-derived columns from entry.meta', () => {
+    const text = buildAnkiText([
+      entry({
+        definition: 'n. 你好',
+        translation: '你好，世界！',
+        meta: {
+          phonetic: 'həˈləʊ',
+          definition: 'a greeting',
+          pos: 'n:100',
+          collins: 5,
+          forms: { lemma: 'hello' },
+        },
+      }),
+    ]);
+    const [cols] = rows(text);
+    expect(cols).toEqual([
+      'Hello',
+      'n. 你好',
+      'Hello, world!',
+      '你好，世界！',
+      'həˈləʊ',
+      'a greeting',
+      '原形 hello',
+      'n:100',
+      '柯林斯★★★★★',
+      '听美剧学英语 episode-01_mp4',
     ]);
   });
 
   it('leaves definition and translation empty when unknown', () => {
     const [cols] = rows(buildAnkiText([entry()]));
-    expect(cols).toHaveLength(5);
+    expect(cols).toHaveLength(10);
     expect(cols![1]).toBe('');
     expect(cols![3]).toBe('');
   });

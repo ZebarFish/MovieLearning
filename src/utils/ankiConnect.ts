@@ -21,6 +21,11 @@ import {
   ANKI_MODEL_NAME,
   CARD_NAME,
   FIELD_DEFINITION,
+  FIELD_ENGLISH_DEFINITION,
+  FIELD_FORMS,
+  FIELD_LEXICAL_TAGS,
+  FIELD_PHONETIC,
+  FIELD_POS,
   FIELD_SENTENCE,
   FIELD_TRANSLATION,
   FIELD_WORD,
@@ -28,6 +33,7 @@ import {
   buildAnkiModelPayload,
   buildCardTemplates,
 } from './ankiTemplate';
+import { formatForms, formatLexicalTags } from './wordMeta';
 
 export const ANKI_CONNECT_URL = 'http://127.0.0.1:8765';
 
@@ -286,9 +292,13 @@ export async function listAnkiNoteTypes(): Promise<string[]> {
 /**
  * Build the AnkiConnect `fields` object for one vocabulary entry.
  *
- * If the target model exposes all four of our field names we fill them
+ * If the target model exposes all nine of our field names we fill them
  * exactly — that's our own template, where 例句 stays clean and the
- * pronunciation comes from the card's `{{tts en_US:单词}}`.
+ * pronunciation comes from the card's `{{tts en_US:单词}}`. The five
+ * dictionary-derived fields (音标 / 英文释义 / 词形变化 / 词性分布 /
+ * 词汇标记) are taken from `entry.meta` and default to '' when unknown —
+ * never `undefined`. `formatForms` / `formatLexicalTags` (from wordMeta.ts)
+ * are reused so the Anki content matches the word card UI exactly.
  *
  * Any other note type is filled positionally (field 1 = 单词, field 2 =
  * 单词释义, …) and, when it has fewer than four fields, the leftover content
@@ -311,6 +321,11 @@ export function buildNoteFields(
     mapped[FIELD_DEFINITION] = definition;
     mapped[FIELD_SENTENCE] = sentence;
     mapped[FIELD_TRANSLATION] = translation;
+    mapped[FIELD_PHONETIC] = entry.meta?.phonetic ?? '';
+    mapped[FIELD_ENGLISH_DEFINITION] = entry.meta?.definition ?? '';
+    mapped[FIELD_FORMS] = formatForms(entry.meta);
+    mapped[FIELD_POS] = entry.meta?.pos ?? '';
+    mapped[FIELD_LEXICAL_TAGS] = formatLexicalTags(entry.meta);
     return mapped;
   }
 
@@ -393,11 +408,18 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
   }
 
   const ours = templates[CARD_NAME];
+  // A template installed before the nine-field model has the TTS line and the
+  // original four sections but none of the dictionary-derived ones, so those
+  // are checked too — otherwise an existing deck would never be upgraded.
   const templateStale =
     !ours ||
     !ours.Front.includes(TTS_EXPRESSION) ||
+    !ours.Front.includes(FIELD_PHONETIC) ||
     !ours.Back.includes(FIELD_TRANSLATION) ||
-    !ours.Back.includes(FIELD_DEFINITION);
+    !ours.Back.includes(FIELD_DEFINITION) ||
+    !ours.Back.includes(FIELD_ENGLISH_DEFINITION) ||
+    !ours.Back.includes(FIELD_FORMS) ||
+    !ours.Back.includes(FIELD_LEXICAL_TAGS);
 
   let templatesUpdated = false;
   if (templateStale) {

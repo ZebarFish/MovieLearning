@@ -5,11 +5,16 @@
  * "听美剧学英语" model. Pure data (no network, no AnkiConnect calls), so the
  * payload can be unit-tested and reviewed without a running Anki.
  *
- * Cards carry four fields …
+ * Cards carry nine fields …
  *   单词      the English word
- *   单词释义  its definition
+ *   单词释义  its Chinese definition
  *   例句      the sentence the word was met in
  *   例句释义  that sentence's Chinese translation
+ *   音标      IPA phonetic (from the offline ECDICT dictionary)
+ *   英文释义  English (WordNet-style) definition, also from ECDICT
+ *   词形变化  inflection summary (原形 / 过去式 / 三单 …)
+ *   词性分布  BNC part-of-speech ratios, e.g. "n:41/v:59"
+ *   词汇标记  Oxford / Collins / exam-tag / frequency badges
  *
  * … plus a pronunciation: `{{tts en_US:单词}}` makes Anki synthesise and
  * play the word itself, so no audio files need to be shipped.
@@ -21,13 +26,28 @@ export const FIELD_WORD = '单词';
 export const FIELD_DEFINITION = '单词释义';
 export const FIELD_SENTENCE = '例句';
 export const FIELD_TRANSLATION = '例句释义';
+export const FIELD_PHONETIC = '音标';
+export const FIELD_ENGLISH_DEFINITION = '英文释义';
+export const FIELD_FORMS = '词形变化';
+export const FIELD_POS = '词性分布';
+export const FIELD_LEXICAL_TAGS = '词汇标记';
 
-/** Field order matters: sync maps the model's fields positionally. */
+/**
+ * Field order matters: sync maps the model's fields positionally onto a
+ * foreign note type, and the first four names are the contract that existing
+ * decks rely on. The five appended fields are additive — older decks simply
+ * leave them blank until the note type is upgraded.
+ */
 export const ANKI_FIELDS: string[] = [
   FIELD_WORD,
   FIELD_DEFINITION,
   FIELD_SENTENCE,
   FIELD_TRANSLATION,
+  FIELD_PHONETIC,
+  FIELD_ENGLISH_DEFINITION,
+  FIELD_FORMS,
+  FIELD_POS,
+  FIELD_LEXICAL_TAGS,
 ];
 
 /**
@@ -40,6 +60,7 @@ export const TTS_EXPRESSION = `{{tts en_US:${FIELD_WORD}}}`;
 export const CARD_NAME = '单词卡';
 
 export const CARD_FRONT = `<div class="word">{{${FIELD_WORD}}}</div>
+<div class="phonetic">{{${FIELD_PHONETIC}}}</div>
 <div class="sound">{{tts en_US:${FIELD_WORD}}}</div>`;
 
 export const CARD_BACK = `{{FrontSide}}
@@ -52,6 +73,11 @@ export const CARD_BACK = `{{FrontSide}}
 </div>
 
 <div class="section">
+  <div class="label">英文释义</div>
+  <div class="value">{{${FIELD_ENGLISH_DEFINITION}}}</div>
+</div>
+
+<div class="section">
   <div class="label">例句</div>
   <div class="value sentence">{{${FIELD_SENTENCE}}}</div>
 </div>
@@ -59,6 +85,21 @@ export const CARD_BACK = `{{FrontSide}}
 <div class="section">
   <div class="label">例句释义</div>
   <div class="value">{{${FIELD_TRANSLATION}}}</div>
+</div>
+
+<div class="section">
+  <div class="label">词形变化</div>
+  <div class="value">{{${FIELD_FORMS}}}</div>
+</div>
+
+<div class="section">
+  <div class="label">词性分布</div>
+  <div class="value">{{${FIELD_POS}}}</div>
+</div>
+
+<div class="section">
+  <div class="label">词汇标记</div>
+  <div class="value tags">{{${FIELD_LEXICAL_TAGS}}}</div>
 </div>`;
 
 export const ANKI_CSS = `.card {
@@ -76,6 +117,13 @@ export const ANKI_CSS = `.card {
   font-weight: 700;
   color: #1b5e9c;
   letter-spacing: 0.01em;
+}
+
+.phonetic {
+  font-family: Georgia, serif;
+  font-size: 16px;
+  color: #6b7488;
+  margin-top: 4px;
 }
 
 .sound {
@@ -106,6 +154,10 @@ hr#answer {
   color: #1f2430;
 }
 
+.tags {
+  color: #8a93a5;
+}
+
 .sentence {
   font-style: italic;
   color: #3c4658;
@@ -122,6 +174,11 @@ hr#answer {
   color: #7fb6e8;
 }
 
+.night_mode .phonetic,
+.nightMode .phonetic {
+  color: #9aa3b5;
+}
+
 .night_mode hr#answer,
 .nightMode hr#answer {
   border-top-color: #3a3f4b;
@@ -130,6 +187,11 @@ hr#answer {
 .night_mode .value,
 .nightMode .value {
   color: #e6e9f0;
+}
+
+.night_mode .tags,
+.nightMode .tags {
+  color: #9aa3b5;
 }
 
 .night_mode .sentence,

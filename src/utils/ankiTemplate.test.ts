@@ -9,6 +9,11 @@ import {
   CARD_BACK,
   CARD_FRONT,
   FIELD_DEFINITION,
+  FIELD_ENGLISH_DEFINITION,
+  FIELD_FORMS,
+  FIELD_LEXICAL_TAGS,
+  FIELD_PHONETIC,
+  FIELD_POS,
   FIELD_SENTENCE,
   FIELD_TRANSLATION,
   FIELD_WORD,
@@ -18,24 +23,57 @@ import {
 } from './ankiTemplate';
 
 describe('ankiTemplate', () => {
-  it('declares the four card fields in the expected order', () => {
+  it('declares the nine card fields in the expected order', () => {
     expect(ANKI_FIELDS).toEqual([
       FIELD_WORD,
       FIELD_DEFINITION,
       FIELD_SENTENCE,
       FIELD_TRANSLATION,
+      FIELD_PHONETIC,
+      FIELD_ENGLISH_DEFINITION,
+      FIELD_FORMS,
+      FIELD_POS,
+      FIELD_LEXICAL_TAGS,
     ]);
-    expect(ANKI_FIELDS).toEqual(['单词', '单词释义', '例句', '例句释义']);
+    expect(ANKI_FIELDS).toEqual([
+      '单词',
+      '单词释义',
+      '例句',
+      '例句释义',
+      '音标',
+      '英文释义',
+      '词形变化',
+      '词性分布',
+      '词汇标记',
+    ]);
   });
 
-  it('pronounces the word itself via TTS', () => {
+  it('keeps the original four names first, so existing decks keep working', () => {
+    expect(ANKI_FIELDS.slice(0, 4)).toEqual([
+      '单词',
+      '单词释义',
+      '例句',
+      '例句释义',
+    ]);
+  });
+
+  it('pronounces the word itself via TTS and shows the IPA on the front', () => {
     expect(TTS_EXPRESSION).toBe('{{tts en_US:单词}}');
     expect(CARD_FRONT).toContain(TTS_EXPRESSION);
     expect(CARD_FRONT).toContain(`{{${FIELD_WORD}}}`);
+    expect(CARD_FRONT).toContain(`{{${FIELD_PHONETIC}}}`);
   });
 
-  it('shows the definition, example and its translation on the back', () => {
-    for (const field of [FIELD_DEFINITION, FIELD_SENTENCE, FIELD_TRANSLATION]) {
+  it('shows every back-of-card field', () => {
+    for (const field of [
+      FIELD_DEFINITION,
+      FIELD_SENTENCE,
+      FIELD_TRANSLATION,
+      FIELD_ENGLISH_DEFINITION,
+      FIELD_FORMS,
+      FIELD_POS,
+      FIELD_LEXICAL_TAGS,
+    ]) {
       expect(CARD_BACK).toContain(`{{${field}}}`);
     }
   });

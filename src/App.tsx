@@ -57,6 +57,7 @@ import type {
   SubtitleLang,
   SubtitleTrack,
   VideoSource,
+  WordMeta,
 } from './types';
 import { detectKind, mediaKindFromName, MEDIA_FILE_INPUT_ATTR } from './utils/mediaFile';
 import { downloadFileUrl, type DownloadTask } from './utils/downloader';
@@ -224,6 +225,7 @@ export default function App(): JSX.Element {
       sentence: string,
       lang: SubtitleLang,
       definition?: string,
+      meta?: WordMeta,
     ): void => {
       addWord({
         word,
@@ -232,6 +234,7 @@ export default function App(): JSX.Element {
         time: currentTime,
         lang,
         definition,
+        meta,
       });
     },
     [addWord, currentTime, videoName],
@@ -802,12 +805,13 @@ export default function App(): JSX.Element {
           lang={selectedWord.lang}
           isCollected={isSelectedCollected}
           onClose={() => setSelectedWord(null)}
-          onCollect={(definition) =>
+          onCollect={(definition, meta) =>
             handleAddToVocab(
               selectedWord.word,
               selectedWord.sentence,
               selectedWord.lang,
               definition,
+              meta,
             )
           }
           onUncollect={() => removeWord(selectedWord.word)}
