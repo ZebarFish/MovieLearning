@@ -48,9 +48,13 @@ coverage/
 # The directory carries its own .tasks.json manifest; neither belongs in git.
 downloads/
 
-# Local data blobs (the offline ECDICT dictionary DB, ~1 GB, plus its zip).
-# Downloaded, not source — never committed.
-data/
+# Local data blobs. The indexed ECDICT dictionary itself (~230 MB on disk,
+# ecdict.dat alone is 218 MB) is derived data and stays out of git: GitHub
+# rejects files over 100 MB (GH001), so pushing it would fail every time.
+# The compacted 7z snapshot of the index IS tracked, so a fresh clone can
+# restore offline lookups by extracting it instead of rebuilding the index.
+data/*
+!data/ecdict.7z
 
 # Local scratch files (probe output, captured build logs — never committed)
 .*.txt
