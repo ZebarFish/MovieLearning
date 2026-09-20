@@ -198,5 +198,17 @@ describe('Per-cue replay (听写 重听这句 / 跟读 原声)', () => {
     fireEvent.timeUpdate(video);
     await waitFor(() => expect(pauseSpy).toHaveBeenCalled());
     expect(fakeTime).toBe(5);
+
+    // The stop disarms itself: markers are cleared so a manual play can
+    // advance past the cue end instead of being dragged back to B forever.
+    await waitFor(() =>
+      expect(container.textContent).toContain('A: 未设置 · B: 未设置'),
+    );
+    const pausesAtStop = pauseSpy.mock.calls.length;
+    fakeTime = 6;
+    fireEvent.timeUpdate(video);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(fakeTime).toBe(6);
+    expect(pauseSpy.mock.calls.length).toBe(pausesAtStop);
   });
 });

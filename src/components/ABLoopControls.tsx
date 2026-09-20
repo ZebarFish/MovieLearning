@@ -66,8 +66,15 @@ export function ABLoopControls({
   // Keep the latest loop state in a ref so the timeupdate handler (registered
   // once) always reads fresh values without re-binding every state change.
   const loopRef = useRef<ABLoopState>(loop);
+  // True once this marker pair has stopped playback at B and been cleared —
+  // guards against re-clearing every rAF frame until new markers arrive.
+  const stopDisarmedRef = useRef(false);
   useEffect(() => {
     loopRef.current = loop;
+    // Fresh markers re-arm the stop-at-B behaviour.
+    if (loop.pointA !== null || loop.pointB !== null) {
+      stopDisarmedRef.current = false;
+    }
   }, [loop]);
 
   // Effect: when playback reaches B, jump back to A and continue playing.
@@ -101,6 +108,13 @@ export function ABLoopControls({
         ) {
           video.currentTime = liveLoop.pointB;
           video.pause();
+          // Disarm the stop: clear the markers so a manual play afterwards
+          // is not dragged back to B forever. The next scoped replay
+          // (重听这句 / 原声 / segment play) re-arms them itself.
+          if (!stopDisarmedRef.current) {
+            stopDisarmedRef.current = true;
+            onLoopChange(clearABLoop());
+          }
         }
         return;
       }
