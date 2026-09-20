@@ -53,6 +53,7 @@ import type {
   LearningStep,
   StudySegment,
   StudyStage,
+  SubtitleCue,
   SubtitleDisplayMode,
   SubtitleLang,
   SubtitleTrack,
@@ -318,12 +319,41 @@ export default function App(): JSX.Element {
   }, [segment, seek, videoRef]);
 
   const handlePlaySegment = useCallback((): void => {
-    if (segment) {
-      seek(segment.startTime);
-      void videoRef.current?.play();
-      setBlindPlays((n) => n + 1);
-    }
+    if (!segment) return;
+    // Re-sync the A-B markers to the segment: a dictation/shadow cue replay
+    // narrows them to one sentence, and replaying the segment must widen them
+    // back — whoever starts scoped playback owns the markers.
+    setLoop((prev) => ({
+      pointA: segment.startTime,
+      pointB: segment.endTime,
+      enabled: prev.enabled,
+    }));
+    seek(segment.startTime);
+    void videoRef.current?.play();
+    setBlindPlays((n) => n + 1);
   }, [segment, seek, videoRef]);
+
+  /**
+   * Play exactly one subtitle cue, then stop at its end.
+   *
+   * The stop is not a timer — it reuses the A-B machinery: syncing the loop
+   * markers to the cue bounds makes ABLoopControls behave correctly for free.
+   * With 循环 A-B off, playback pauses at the sentence end (the dictation
+   * semantic); with it on, the sentence itself repeats, which is what 逐句
+   * listening wants anyway.
+   */
+  const playCueOnce = useCallback(
+    (cue: SubtitleCue): void => {
+      setLoop((prev) => ({
+        pointA: cue.start,
+        pointB: cue.end,
+        enabled: prev.enabled,
+      }));
+      seek(cue.start);
+      void videoRef.current?.play();
+    },
+    [seek, videoRef],
+  );
 
   const handleExitGuided = useCallback((): void => {
     setGuided(false);
@@ -374,18 +404,17 @@ export default function App(): JSX.Element {
     setDiffByIndex(null);
   }, []);
 
-  // 跟读面板的「原声」按钮：监听每行的播放事件，跳到该句开头播放。
+  // 跟读面板的「原声」按钮：监听每行的播放事件，只播这一句、到句尾即停。
   useEffect(() => {
     const handler = (e: Event): void => {
-      const cue = (e as CustomEvent<{ start: number }>).detail;
-      if (cue && typeof cue.start === 'number') {
-        seek(cue.start);
-        void videoRef.current?.play();
+      const cue = (e as CustomEvent<SubtitleCue>).detail;
+      if (cue && typeof cue.start === 'number' && typeof cue.end === 'number') {
+        playCueOnce(cue);
       }
     };
     window.addEventListener('study-play-cue', handler);
     return () => window.removeEventListener('study-play-cue', handler);
-  }, [seek, videoRef]);
+  }, [playCueOnce]);
 
   const closeDrawer = (): void => setDrawer(null);
 
@@ -646,10 +675,7 @@ export default function App(): JSX.Element {
               onChangeCue={(cueIndex, value) =>
                 setTypedByIndex((prev) => ({ ...prev, [cueIndex]: value }))
               }
-              onReplayCue={(cue) => {
-                seek(cue.start);
-                void videoRef.current?.play();
-              }}
+              onReplayCue={playCueOnce}
               onSubmitAll={handleDictationSubmit}
               onRetry={handleDictationRetry}
               onNext={() => setStudyStage('shadow')}

@@ -132,3 +132,71 @@ describe('Full user flow in jsdom', () => {
     expect(overlay.textContent).toMatch(/Welcome to the listening practice demo/);
   });
 });
+
+describe('Per-cue replay (听写 重听这句 / 跟读 原声)', () => {
+  it('plays exactly one cue and stops at its end', async () => {
+    const { container } = render(<App />);
+
+    // Load media + subtitles (same steps as the full-flow test above).
+    fireEvent.click(screen.getByText('🎬 媒体与字幕'));
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('选择视频');
+    });
+    const videoInput = document.body.querySelector(
+      'input[type="file"][accept*="video"]',
+    ) as HTMLInputElement;
+    const videoFile = new File(['fake-video'], 'demo.mp4', { type: 'video/mp4' });
+    fireEvent.change(videoInput, { target: { files: [videoFile] } });
+    const subtitleInput = document.body.querySelector(
+      'input[type="file"][accept*=".srt"]',
+    ) as HTMLInputElement;
+    const srtFile = new File([DEMO_SRT], 'demo.srt', { type: 'text/plain' });
+    fireEvent.change(subtitleInput, { target: { files: [srtFile] } });
+    await waitFor(() => {
+      expect(screen.getByText(/Welcome to the listening practice demo/)).toBeTruthy();
+    });
+
+    // The cue replay bounds playback via the A-B markers, so the <video>
+    // element must exist for ABLoopControls to police it.
+    await waitFor(() => {
+      expect(container.querySelector('video')).toBeTruthy();
+    });
+    const video = container.querySelector('video') as HTMLMediaElement;
+
+    // jsdom does not implement media playback — drive currentTime manually.
+    let fakeTime = 0;
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => fakeTime,
+      set: (value: number) => {
+        fakeTime = value;
+      },
+    });
+    const playSpy = vi.fn();
+    const pauseSpy = vi.fn();
+    video.play = playSpy as unknown as HTMLMediaElement['play'];
+    video.pause = pauseSpy as unknown as HTMLMediaElement['pause'];
+
+    // Replay cue 2 (2.5s–5s): seeks to the cue start…
+    window.dispatchEvent(
+      new CustomEvent('study-play-cue', {
+        detail: { index: 2, start: 2.5, end: 5, text: 'x' },
+      }),
+    );
+    expect(fakeTime).toBe(2.5);
+    expect(playSpy).toHaveBeenCalledTimes(1);
+
+    // Sanity: below the cue end nothing stops playback.
+    fakeTime = 3;
+    fireEvent.timeUpdate(video);
+    expect(fakeTime).toBe(3);
+
+    // …once playback runs past the cue end, it pauses and snaps back to the
+    // cue end. ABLoopControls re-fires pause on every rAF frame while the
+    // playhead sits at B, so we assert "was called", not an exact count.
+    fakeTime = 5.4;
+    fireEvent.timeUpdate(video);
+    await waitFor(() => expect(pauseSpy).toHaveBeenCalled());
+    expect(fakeTime).toBe(5);
+  });
+});
