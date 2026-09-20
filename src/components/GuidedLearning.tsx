@@ -33,8 +33,9 @@ const STAGES: { key: StudyStage; label: string; hint: string }[] = [
   { key: 'locate', label: '1 定位', hint: '在右侧字幕列表用每行的「起」「终」选择要学习的片段' },
   { key: 'blind', label: '2 盲听', hint: '字幕已隐藏。开了「循环 A-B」就循环播放，否则播到结尾自动停' },
   { key: 'dictation', label: '3 听写', hint: '右侧逐句听写：每句一个输入框，提交后逐句订正（可开关字幕）' },
-  { key: 'shadow', label: '4 跟读', hint: '右侧逐句跟读：播放原声 → 录音 → 回放对比 + 朗读打分（可开关字幕）' },
-  { key: 'collect', label: '5 收词', hint: '右侧把之前写错的词手动收入词库（再点一次取消），完成后标记已学' },
+  { key: 'verify', label: '4 回听', hint: '订正后逐句回听：播放原声，对照自己的听写，确认每句都听清了' },
+  { key: 'shadow', label: '5 跟读', hint: '右侧逐句跟读：播放原声 → 录音 → 回放对比 + 朗读打分（可开关字幕）' },
+  { key: 'collect', label: '6 收词', hint: '右侧把之前写错的词手动收入词库（再点一次取消），完成后标记已学' },
 ];
 
 /** Shared subtitle on/off toggle used by dictation & shadow panels.
@@ -213,6 +214,59 @@ export function BlindPanel({
 // 听写(逐句) + 订正:每句一个输入框,提交后该句下方显示红/绿差异
 // ---------------------------------------------------------------------------
 
+/** Shared correction view: what the user typed, diff-colored against the
+ *  original (green = correct, red strikethrough/wavy = wrong, with the
+ *  correct form on hover). Used by both 听写订正 and 回听验证. */
+function CorrectionView({ result }: { result: DiffResult }): JSX.Element {
+  return (
+    <Box sx={{ mt: 0.5 }}>
+      {result.wrongWords.length === 0 && result.extraTyped.length === 0 ? (
+        <Typography variant="caption" sx={{ color: '#66bb6a' }}>
+          ✓ 本句全对
+        </Typography>
+      ) : (
+        <Typography variant="body2" sx={{ lineHeight: 1.8 }}>
+          {result.tokens.map((t, idx) =>
+            t.status === 'ok' ? (
+              <span key={idx} style={{ color: '#66bb6a' }}>
+                {t.text}{' '}
+              </span>
+            ) : (
+              <Tooltip key={idx} title={`正确写法:${t.text}`}>
+                <span
+                  style={{
+                    color: '#ef5350',
+                    fontWeight: 600,
+                    textDecoration: t.typed
+                      ? 'line-through'
+                      : 'underline wavy',
+                    cursor: 'help',
+                  }}
+                >
+                  {t.typed ?? `(${t.text})`}{' '}
+                </span>
+              </Tooltip>
+            ),
+          )}
+          {result.extraTyped.length > 0 && (
+            <Typography
+              component="span"
+              variant="caption"
+              sx={{
+                fontStyle: 'italic',
+                color: 'text.secondary',
+                ml: 0.5,
+              }}
+            >
+              (多写:{result.extraTyped.join(' / ')})
+            </Typography>
+          )}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 export function DictationPanel({
   cues,
   typed,
@@ -288,53 +342,7 @@ export function DictationPanel({
                   disabled={submitted}
                   error={submitted ? (result?.wrongWords.length ?? 0) > 0 : false}
                 />
-                {result && (
-                  <Box sx={{ mt: 0.5 }}>
-                    {result.wrongWords.length === 0 && result.extraTyped.length === 0 ? (
-                      <Typography variant="caption" sx={{ color: '#66bb6a' }}>
-                        ✓ 本句全对
-                      </Typography>
-                    ) : (
-                      <Typography variant="body2" sx={{ lineHeight: 1.8 }}>
-                        {result.tokens.map((t, idx) =>
-                          t.status === 'ok' ? (
-                            <span key={idx} style={{ color: '#66bb6a' }}>
-                              {t.text}{' '}
-                            </span>
-                          ) : (
-                            <Tooltip key={idx} title={`正确写法:${t.text}`}>
-                              <span
-                                style={{
-                                  color: '#ef5350',
-                                  fontWeight: 600,
-                                  textDecoration: t.typed
-                                    ? 'line-through'
-                                    : 'underline wavy',
-                                  cursor: 'help',
-                                }}
-                              >
-                                {t.typed ?? `(${t.text})`}{' '}
-                              </span>
-                            </Tooltip>
-                          ),
-                        )}
-                        {result.extraTyped.length > 0 && (
-                          <Typography
-                            component="span"
-                            variant="caption"
-                            sx={{
-                              fontStyle: 'italic',
-                              color: 'text.secondary',
-                              ml: 0.5,
-                            }}
-                          >
-                            (多写:{result.extraTyped.join(' / ')})
-                          </Typography>
-                        )}
-                      </Typography>
-                    )}
-                  </Box>
-                )}
+                {result && <CorrectionView result={result} />}
               </ListItem>
             );
           })}
@@ -346,7 +354,7 @@ export function DictationPanel({
                 重新听写
               </Button>
               <Button size="small" variant="contained" onClick={onNext}>
-                下一步：跟读 →
+                下一步：回听验证 →
               </Button>
             </>
           ) : (
@@ -359,6 +367,113 @@ export function DictationPanel({
               提交订正 →
             </Button>
           )}
+        </Stack>
+      </Stack>
+    </PanelShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 回听验证(逐句):订正后逐句重听原声,对照自己的听写确认
+// ---------------------------------------------------------------------------
+
+export function VerifyPanel({
+  cues,
+  typed,
+  results,
+  onReplayCue,
+  onRetry,
+  onNext,
+  subtitleVisible,
+  onToggleSubtitle,
+  displayMode = 'both',
+}: {
+  cues: SubtitleCue[];
+  /** cueIndex -> what the user typed during dictation */
+  typed: Record<number, string>;
+  /** cueIndex -> diff result (present after dictation submission) */
+  results: Record<number, DiffResult> | null;
+  onReplayCue: (cue: SubtitleCue) => void;
+  onRetry: () => void;
+  onNext: () => void;
+  subtitleVisible: boolean;
+  onToggleSubtitle: () => void;
+  displayMode?: SubtitleDisplayMode;
+}): JSX.Element {
+  const [confirmed, setConfirmed] = useState<Record<number, boolean>>({});
+  const confirmedCount = cues.filter((c) => confirmed[c.index]).length;
+  const allConfirmed = cues.length > 0 && confirmedCount === cues.length;
+  const toggle = (cueIndex: number): void =>
+    setConfirmed((prev) => ({ ...prev, [cueIndex]: !prev[cueIndex] }));
+  return (
+    <PanelShell
+      title="👂 回听验证"
+      actions={<SubtitleToggle visible={subtitleVisible} onToggle={onToggleSubtitle} />}
+    >
+      <Stack spacing={1}>
+        <Typography variant="caption" color="text.secondary">
+          逐句回听原声，对照自己的听写。都听清了就打 ✓，有疑问可以回去重新听写。
+        </Typography>
+        <List dense disablePadding>
+          {cues.map((cue) => {
+            const result = results?.[cue.index];
+            const ok = !!confirmed[cue.index];
+            return (
+              <ListItem
+                key={cue.index}
+                sx={{
+                  display: 'block',
+                  borderBottom: '1px solid rgba(255,255,255,0.06)',
+                  py: 1,
+                }}
+              >
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                    第 {cue.index} 句
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="text"
+                    startIcon={<PlayArrowIcon />}
+                    onClick={() => onReplayCue(cue)}
+                    sx={{ minWidth: 0, px: 0.5 }}
+                  >
+                    重听这句
+                  </Button>
+                  <Button
+                    size="small"
+                    variant={ok ? 'contained' : 'outlined'}
+                    color={ok ? 'success' : 'inherit'}
+                    data-testid={`verify-confirm-${cue.index}`}
+                    onClick={() => toggle(cue.index)}
+                  >
+                    {ok ? '✓ 已确认' : '听清了，确认'}
+                  </Button>
+                </Stack>
+                <Typography variant="body2" sx={{ mb: result ? 0 : 0.5 }}>
+                  你的听写:{typed[cue.index]?.trim() || '(空)'}
+                </Typography>
+                {result && <CorrectionView result={result} />}
+              </ListItem>
+            );
+          })}
+        </List>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="caption" color="text.secondary">
+            已确认 {confirmedCount}/{cues.length}
+          </Typography>
+          <Box sx={{ flexGrow: 1 }} />
+          <Button size="small" variant="outlined" onClick={onRetry}>
+            重新听写
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            disabled={!allConfirmed}
+            onClick={onNext}
+          >
+            下一步：跟读 →
+          </Button>
         </Stack>
       </Stack>
     </PanelShell>

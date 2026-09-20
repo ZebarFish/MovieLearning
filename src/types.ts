@@ -163,7 +163,7 @@ export type StudyStage =
   | 'locate'
   | 'blind'
   | 'dictation'
-  | 'correct'
+  | 'verify'
   | 'shadow'
   | 'collect';
 

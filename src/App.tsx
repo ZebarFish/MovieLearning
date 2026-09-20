@@ -45,6 +45,7 @@ import {
   DictationPanel,
   GuidedLearningBar,
   ShadowPanel,
+  VerifyPanel,
 } from './components/GuidedLearning';
 import { diffDictation, extractWordSentence } from './utils/textDiff';
 import type { DiffResult } from './utils/textDiff';
@@ -678,6 +679,21 @@ export default function App(): JSX.Element {
               onReplayCue={playCueOnce}
               onSubmitAll={handleDictationSubmit}
               onRetry={handleDictationRetry}
+              onNext={() => setStudyStage('verify')}
+              subtitleVisible={subtitleVisible}
+              onToggleSubtitle={() => setSubtitleVisible((v) => !v)}
+              displayMode={displayMode}
+            />
+          ) : guided && studyStage === 'verify' ? (
+            <VerifyPanel
+              cues={segmentCues}
+              typed={typedByIndex}
+              results={diffByIndex}
+              onReplayCue={playCueOnce}
+              onRetry={() => {
+                handleDictationRetry();
+                setStudyStage('dictation');
+              }}
               onNext={() => setStudyStage('shadow')}
               subtitleVisible={subtitleVisible}
               onToggleSubtitle={() => setSubtitleVisible((v) => !v)}
