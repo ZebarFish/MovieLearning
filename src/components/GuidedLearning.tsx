@@ -24,12 +24,16 @@ import type { StudySegment, StudyStage, SubtitleCue, SubtitleDisplayMode } from 
 import type { WrongWordRecord } from '../hooks/useStudyProgress';
 import { diffDictation, filterCueText } from '../utils/textDiff';
 import type { DiffResult } from '../utils/textDiff';
+import { scorePronunciation } from '../utils/pronunciationScore';
+import type { PronunciationResult } from '../utils/pronunciationScore';
+import { createRecognizer } from '../utils/speechRecognition';
+import type { Recognizer } from '../utils/speechRecognition';
 
 const STAGES: { key: StudyStage; label: string; hint: string }[] = [
   { key: 'locate', label: '1 定位', hint: '在右侧字幕列表用每行的「起」「终」选择要学习的片段' },
   { key: 'blind', label: '2 盲听', hint: '字幕已隐藏。开了「循环 A-B」就循环播放，否则播到结尾自动停' },
   { key: 'dictation', label: '3 听写', hint: '右侧逐句听写：每句一个输入框，提交后逐句订正（可开关字幕）' },
-  { key: 'shadow', label: '4 跟读', hint: '右侧逐句跟读：播放原声 → 录音 → 回放对比（可开关字幕）' },
+  { key: 'shadow', label: '4 跟读', hint: '右侧逐句跟读：播放原声 → 录音 → 回放对比 + 朗读打分（可开关字幕）' },
   { key: 'collect', label: '5 收词', hint: '右侧把之前写错的词手动收入词库（再点一次取消），完成后标记已学' },
 ];
 
@@ -365,6 +369,71 @@ export function DictationPanel({
 // 跟读(逐句)
 // ---------------------------------------------------------------------------
 
+type ShadowFeedback =
+  | { kind: 'unsupported' }
+  | { kind: 'no-speech' }
+  | { kind: 'error'; message: string }
+  | { kind: 'score'; result: PronunciationResult };
+
+function ShadowFeedbackView({ feedback }: { feedback: ShadowFeedback }): JSX.Element {
+  if (feedback.kind === 'unsupported') {
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+        当前浏览器不支持语音识别打分（需 Chrome / Edge，且需联网）；录音回放不受影响。
+      </Typography>
+    );
+  }
+  if (feedback.kind === 'no-speech') {
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+        没有识别到朗读内容，再试一次吧。
+      </Typography>
+    );
+  }
+  if (feedback.kind === 'error') {
+    return (
+      <Typography variant="caption" color="error" sx={{ mt: 0.5 }}>
+        打分失败:{feedback.message}
+      </Typography>
+    );
+  }
+  const { result } = feedback;
+  const tokenColor = (status: 'ok' | 'wrong' | 'missed'): string =>
+    status === 'ok' ? 'success.main' : status === 'wrong' ? 'error.main' : 'text.disabled';
+  return (
+    <Box sx={{ mt: 0.75 }}>
+      <Typography
+        variant="caption"
+        sx={{ color: result.score >= 80 ? 'success.main' : result.score >= 50 ? 'warning.main' : 'error.main' }}
+        data-testid="shadow-score"
+      >
+        朗读得分 {result.score} 分
+      </Typography>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '2px 6px', mt: 0.5 }}>
+        {result.tokens.map((t, idx) => (
+          <Typography
+            key={idx}
+            variant="body2"
+            data-testid={`shadow-word-${t.status}`}
+            sx={{
+              color: tokenColor(t.status),
+              textDecoration: t.status === 'missed' ? 'line-through' : 'none',
+            }}
+          >
+            {t.text}
+            {t.status === 'wrong' && t.heard ? `（读到:${t.heard}）` : ''}
+          </Typography>
+        ))}
+        {result.extraSpoken.map((w, idx) => (
+          <Typography key={`x${idx}`} variant="body2" sx={{ color: 'warning.main' }}>
+            ＋{w}
+          </Typography>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
 function ShadowCueRow({
   cue,
   showText,
@@ -377,19 +446,53 @@ function ShadowCueRow({
   const [recording, setRecording] = useState<boolean>(false);
   const [recordUrl, setRecordUrl] = useState<string | null>(null);
   const [micError, setMicError] = useState<string>('');
+  const [scoring, setScoring] = useState<boolean>(false);
+  const [feedback, setFeedback] = useState<ShadowFeedback | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const recognizerRef = useRef<Recognizer | null>(null);
+  const heardRef = useRef<string>('');
+  const srErrorRef = useRef<string>('');
+
+  // The scoring target is always the English part of the line.
+  const targetText = filterCueText(cue.text, 'en');
+
+  const finalizeScore = (): void => {
+    setScoring(false);
+    const heard = heardRef.current.trim();
+    if (!heard) {
+      if (srErrorRef.current === 'not-allowed' || srErrorRef.current === 'service-not-allowed') {
+        setFeedback({ kind: 'error', message: '麦克风权限被拒绝' });
+      } else if (srErrorRef.current === 'network' || srErrorRef.current === 'language-not-supported') {
+        setFeedback({ kind: 'unsupported' });
+      } else {
+        setFeedback({ kind: 'no-speech' });
+      }
+      return;
+    }
+    setFeedback({ kind: 'score', result: scorePronunciation(targetText, heard) });
+  };
 
   const stop = (): void => {
     recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     setRecording(false);
+    // Stop recognition too; its onDone callback computes the score once the
+    // engine flushes the pending final transcript (bounded by a 3s fallback).
+    const hadRecognizer = recognizerRef.current !== null;
+    recognizerRef.current?.stop();
+    recognizerRef.current = null;
+    if (hadRecognizer) setScoring(true);
   };
 
   const start = async (): Promise<void> => {
     setMicError('');
+    setFeedback(null);
+    setScoring(false);
+    heardRef.current = '';
+    srErrorRef.current = '';
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -406,6 +509,22 @@ function ShadowCueRow({
       rec.start();
       recorderRef.current = rec;
       setRecording(true);
+      // Run live recognition in parallel with the recording. It uses its own
+      // mic access; both only read the microphone.
+      recognizerRef.current = createRecognizer({
+        lang: 'en-US',
+        onFinal: (transcript) => {
+          heardRef.current += ` ${transcript}`;
+        },
+        onError: (err) => {
+          srErrorRef.current = err;
+        },
+        onDone: finalizeScore,
+      });
+      if (!recognizerRef.current) {
+        // Recording still works; scoring is just unavailable.
+        setFeedback({ kind: 'unsupported' });
+      }
     } catch (err) {
       setMicError(`麦克风不可用:${(err as Error).message}`);
     }
@@ -462,6 +581,12 @@ function ShadowCueRow({
           </Typography>
         )}
       </Stack>
+      {scoring && (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+          正在识别朗读内容…
+        </Typography>
+      )}
+      {feedback && <ShadowFeedbackView feedback={feedback} />}
     </ListItem>
   );
 }
