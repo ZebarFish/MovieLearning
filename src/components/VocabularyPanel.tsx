@@ -9,7 +9,7 @@
  *      machine translation) for any entry still missing them,
  *   2. push  — create/repair the "听美剧学英语" note type and add the notes.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -37,6 +37,8 @@ import { downloadAnkiExport } from '../utils/ankiExport';
 import {
   checkAnkiConnection,
   ensureAnkiModel,
+  getSyncedWords,
+  setWordSyncedManually,
   syncVocabToAnki,
   listAnkiDecks,
   listAnkiNoteTypes,
@@ -47,6 +49,7 @@ import {
 import { ANKI_MODEL_NAME, ANKI_FIELDS } from '../utils/ankiTemplate';
 import { countPendingEnrichment, enrichVocab } from '../utils/vocabEnrich';
 import { formatTime } from '../utils/subtitleParser';
+import { CollapsiblePanel } from './CollapsiblePanel';
 
 interface VocabularyPanelProps {
   open: boolean;
@@ -105,9 +108,32 @@ export function VocabularyPanel({
   const [enrichProgress, setEnrichProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
+  /** Which subset of the list to show, by Anki sync state. */
+  const [syncFilter, setSyncFilter] = useState<'all' | 'unsynced' | 'synced'>('all');
+  /** Bumped whenever the synced record may have changed (sync / manual edit). */
+  const [syncedVersion, setSyncedVersion] = useState<number>(0);
 
   const modelExists = noteOptions.includes(ANKI_MODEL_NAME);
-  const pendingEnrichment = countPendingEnrichment(vocab);
+
+  // The deck sync will actually use (same fallback as handleSync).
+  const activeDeck = deck.trim() || '系统默认';
+
+  // Lowercase words recorded as synced for the active deck. Re-read whenever
+  // the drawer opens, the deck changes, or a sync/manual edit happened.
+  const syncedSet = useMemo(
+    () => (open ? getSyncedWords(activeDeck) : new Set<string>()),
+    [open, activeDeck, syncedVersion],
+  );
+  const isSynced = (entry: VocabWord): boolean =>
+    syncedSet.has(entry.word.trim().toLowerCase());
+  const syncedCount = vocab.filter(isSynced).length;
+  const unsyncedCount = vocab.length - syncedCount;
+  // 一键同步 only ever touches words not yet recorded as synced.
+  const unsyncedEntries = vocab.filter((e) => !isSynced(e));
+  const shownVocab =
+    syncFilter === 'all'
+      ? vocab
+      : vocab.filter((e) => (syncFilter === 'synced' ? isSynced(e) : !isSynced(e)));
 
   // Probe AnkiConnect each time the drawer opens, and pull real deck /
   // note-type lists so the user picks from what actually exists.
@@ -184,34 +210,45 @@ export function VocabularyPanel({
     setSyncError('');
     setEnrichProgress(null);
     try {
+      // 0) Only words not yet recorded as synced — re-syncing everything
+      //    would just produce a wall of "duplicate" skips.
+      const entries = unsyncedEntries;
+
       // 1) Fill 单词释义 / 例句释义 for anything still missing them.
-      let entries = vocab;
-      const total = countPendingEnrichment(vocab);
+      let enriched = entries;
+      const total = countPendingEnrichment(entries);
       if (total > 0) {
         setEnrichProgress({ done: 0, total });
-        entries = await enrichVocab(vocab, {
+        enriched = await enrichVocab(entries, {
           zhCues,
           onProgress: (done, t) => setEnrichProgress({ done, total: t }),
         });
-        entries.forEach((entry, index) => {
-          if (entry !== vocab[index]) onUpdateWord?.(entry);
+        enriched.forEach((entry, index) => {
+          if (entry !== entries[index]) onUpdateWord?.(entry);
         });
       }
       setEnrichProgress(null);
 
       // 2) Push into Anki (creates/repairs our note type on the way).
       const result = await syncVocabToAnki(
-        entries,
+        enriched,
         deck.trim() || '系统默认',
         noteType.trim() || ANKI_MODEL_NAME,
       );
       setSyncResult(result);
+      setSyncedVersion((v) => v + 1);
     } catch (err) {
       setSyncError((err as Error).message);
     } finally {
       setEnrichProgress(null);
       setSyncing(false);
     }
+  };
+
+  /** Manual synced/unsynced override from the word list. */
+  const handleToggleSynced = (entry: VocabWord): void => {
+    setWordSyncedManually(activeDeck, entry.word, !isSynced(entry));
+    setSyncedVersion((v) => v + 1);
   };
 
   const handleExport = (): void => {
@@ -224,7 +261,7 @@ export function VocabularyPanel({
       open={open}
       onClose={onClose}
       PaperProps={{
-        sx: { width: { xs: '100%', sm: 420 }, maxWidth: '100%' },
+        sx: { width: { xs: '100%', sm: 560 }, maxWidth: '100%' },
       }}
     >
       <Box sx={{ p: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -275,11 +312,12 @@ export function VocabularyPanel({
               )
             }
             onClick={() => void handleSync()}
-            disabled={vocab.length === 0 || syncing || !conn?.ok}
+            disabled={vocab.length === 0 || unsyncedCount === 0 || syncing || !conn?.ok}
             fullWidth
             data-testid="anki-sync-btn"
+            title={unsyncedCount === 0 ? '全部已同步' : undefined}
           >
-            一键同步到 Anki
+            一键同步 {unsyncedCount} 个未同步词
           </Button>
           <Button
             variant="outlined"
@@ -322,133 +360,6 @@ export function VocabularyPanel({
           </Box>
         )}
 
-        {/* Deck / note type config (only meaningful when connected). */}
-        {conn?.ok && (
-          <>
-            <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
-              <TextField
-                size="small"
-                label="牌组 (Deck)"
-                value={deck}
-                onChange={(e) => handleDeckChange(e.target.value)}
-                fullWidth
-                select
-                SelectProps={{ native: true }}
-                data-testid="anki-deck-select"
-              >
-                {deckOptions.length > 0 ? (
-                  deckOptions.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))
-                ) : (
-                  <option value={deck}>{deck}</option>
-                )}
-              </TextField>
-              <TextField
-                size="small"
-                label="笔记类型"
-                value={noteType}
-                onChange={(e) => handleNoteTypeChange(e.target.value)}
-                fullWidth
-                select
-                SelectProps={{ native: true }}
-                data-testid="anki-notetype-select"
-              >
-                {noteOptions.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-                {!modelExists && (
-                  <option value={ANKI_MODEL_NAME}>
-                    {ANKI_MODEL_NAME}（本应用创建）
-                  </option>
-                )}
-              </TextField>
-            </Stack>
-
-            {/* Built-in note type: 单词 / 读音 / 单词释义 / 例句 / 例句释义 */}
-            <Box
-              sx={{
-                mt: 1.5,
-                p: 1.25,
-                border: '1px solid',
-                borderColor: 'divider',
-                borderRadius: 1,
-                bgcolor: 'action.hover',
-              }}
-              data-testid="anki-template-box"
-            >
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                  笔记模板「{ANKI_MODEL_NAME}」
-                </Typography>
-                {modelExists ? (
-                  <Chip size="small" color="success" label="已存在" sx={{ height: 18, fontSize: '0.65rem' }} />
-                ) : (
-                  <Chip size="small" color="warning" label="未创建" sx={{ height: 18, fontSize: '0.65rem' }} />
-                )}
-              </Stack>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ display: 'block', mt: 0.5, lineHeight: 1.5 }}
-              >
-                字段：{ANKI_FIELDS.join(' / ')}，其中读音由{' '}
-                <code>{'{{tts en_US:单词}}'}</code> 自动发音。
-              </Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                sx={{ mt: 1 }}
-                onClick={() => void handleCreateModel()}
-                disabled={creatingModel}
-                startIcon={creatingModel ? <CircularProgress size={14} /> : undefined}
-                data-testid="anki-create-model-btn"
-              >
-                {modelExists ? '检查 / 修复模板' : '创建笔记模板'}
-              </Button>
-              {modelStatus && (
-                <Typography
-                  variant="caption"
-                  color="success.main"
-                  sx={{ display: 'block', mt: 0.75 }}
-                  data-testid="anki-model-status"
-                >
-                  {modelStatus.created
-                    ? `已创建「${modelStatus.name}」，字段：${modelStatus.fields.join(' / ')}`
-                    : `模板已就绪（新增字段 ${
-                        modelStatus.addedFields.length > 0
-                          ? modelStatus.addedFields.join('、')
-                          : '无'
-                      }，卡片模板${modelStatus.templatesUpdated ? '已更新' : '保持不变'}）`}
-                </Typography>
-              )}
-              {modelError && (
-                <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.75 }}>
-                  创建失败：{modelError}
-                </Typography>
-              )}
-              {!modelExists && !modelStatus && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
-                  点「创建笔记模板」即可写入 Anki；同步时会自动创建，无需手动操作。
-                </Typography>
-              )}
-            </Box>
-
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-              查重只针对上方牌组:其他牌组(如课程词书)有同一个词不影响同步。
-            </Typography>
-            {pendingEnrichment > 0 && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                有 {pendingEnrichment} 个词缺释义或例句翻译，同步前会自动补全。
-              </Typography>
-            )}
-          </>
-        )}
-
         {/* Sync feedback */}
         {syncResult && (
           <Alert
@@ -478,19 +389,153 @@ export function VocabularyPanel({
             同步失败: {syncError}
           </Alert>
         )}
-        {conn && !conn.ok && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, lineHeight: 1.5 }}>
-            💡 启用一键同步: 打开 Anki → 工具 → 插件 → 获取插件,输入代码
-            <strong> 2055492159</strong>,重启 Anki。然后在插件配置中把
-            <code> "webCorsOriginList": ["*"] </code>加入 config.json。
-          </Typography>
-        )}
-        {!conn?.ok && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-            导出的 .txt 含 {ANKI_FIELDS.join(' / ')} 共 {ANKI_FIELDS.length} 列，可在 Anki 中
-            「文件 → 导入」，导入时选「听美剧学英语」笔记类型即可。
-          </Typography>
-        )}
+
+        {/* Anki settings + explanations — collapsible so a long word list
+            keeps the space it needs. */}
+        <CollapsiblePanel
+          title="Anki 设置与说明"
+          hint={`牌组:${activeDeck} · 已同步 ${syncedCount} / 未同步 ${unsyncedCount}`}
+          defaultExpanded={false}
+        >
+          {conn?.ok && (
+            <>
+              <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                <TextField
+                  size="small"
+                  label="牌组 (Deck)"
+                  value={deck}
+                  onChange={(e) => handleDeckChange(e.target.value)}
+                  fullWidth
+                  select
+                  SelectProps={{ native: true }}
+                  data-testid="anki-deck-select"
+                >
+                  {deckOptions.length > 0 ? (
+                    deckOptions.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={deck}>{deck}</option>
+                  )}
+                </TextField>
+                <TextField
+                  size="small"
+                  label="笔记类型"
+                  value={noteType}
+                  onChange={(e) => handleNoteTypeChange(e.target.value)}
+                  fullWidth
+                  select
+                  SelectProps={{ native: true }}
+                  data-testid="anki-notetype-select"
+                >
+                  {noteOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                  {!modelExists && (
+                    <option value={ANKI_MODEL_NAME}>
+                      {ANKI_MODEL_NAME}（本应用创建）
+                    </option>
+                  )}
+                </TextField>
+              </Stack>
+
+              {/* Built-in note type: 单词 / 读音 / 单词释义 / 例句 / 例句释义 */}
+              <Box
+                sx={{
+                  mt: 1.5,
+                  p: 1.25,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  bgcolor: 'action.hover',
+                }}
+                data-testid="anki-template-box"
+              >
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                    笔记模板「{ANKI_MODEL_NAME}」
+                  </Typography>
+                  {modelExists ? (
+                    <Chip size="small" color="success" label="已存在" sx={{ height: 18, fontSize: '0.65rem' }} />
+                  ) : (
+                    <Chip size="small" color="warning" label="未创建" sx={{ height: 18, fontSize: '0.65rem' }} />
+                  )}
+                </Stack>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: 'block', mt: 0.5, lineHeight: 1.5 }}
+                >
+                  字段：{ANKI_FIELDS.join(' / ')}，其中读音由{' '}
+                  <code>{'{{tts en_US:单词}}'}</code> 自动发音。
+                </Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  sx={{ mt: 1 }}
+                  onClick={() => void handleCreateModel()}
+                  disabled={creatingModel}
+                  startIcon={creatingModel ? <CircularProgress size={14} /> : undefined}
+                  data-testid="anki-create-model-btn"
+                >
+                  {modelExists ? '检查 / 修复模板' : '创建笔记模板'}
+                </Button>
+                {modelStatus && (
+                  <Typography
+                    variant="caption"
+                    color="success.main"
+                    sx={{ display: 'block', mt: 0.75 }}
+                    data-testid="anki-model-status"
+                  >
+                    {modelStatus.created
+                      ? `已创建「${modelStatus.name}」，字段：${modelStatus.fields.join(' / ')}`
+                      : `模板已就绪（新增字段 ${
+                          modelStatus.addedFields.length > 0
+                            ? modelStatus.addedFields.join('、')
+                            : '无'
+                          }，卡片模板${modelStatus.templatesUpdated ? '已更新' : '保持不变'}）`}
+                  </Typography>
+                )}
+                {modelError && (
+                  <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.75 }}>
+                    创建失败：{modelError}
+                  </Typography>
+                )}
+                {!modelExists && !modelStatus && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+                    点「创建笔记模板」即可写入 Anki；同步时会自动创建，无需手动操作。
+                  </Typography>
+                )}
+              </Box>
+
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                查重只针对上方牌组:其他牌组(如课程词书)有同一个词不影响同步。
+              </Typography>
+              {countPendingEnrichment(unsyncedEntries) > 0 && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                  有 {countPendingEnrichment(unsyncedEntries)} 个未同步词缺释义或例句翻译，同步前会自动补全。
+                </Typography>
+              )}
+            </>
+          )}
+          {conn && !conn.ok && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, lineHeight: 1.5 }}>
+              💡 启用一键同步: 打开 Anki → 工具 → 插件 → 获取插件,输入代码
+              <strong> 2055492159</strong>,重启 Anki。然后在插件配置中把
+              <code> "webCorsOriginList": ["*"] </code>加入 config.json。
+            </Typography>
+          )}
+          {!conn?.ok && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              导出的 .txt 含 {ANKI_FIELDS.join(' / ')} 共 {ANKI_FIELDS.length} 列，可在 Anki 中
+              「文件 → 导入」，导入时选「听美剧学英语」笔记类型即可。
+            </Typography>
+          )}
+        </CollapsiblePanel>
       </Box>
       <Divider />
 
@@ -502,70 +547,133 @@ export function VocabularyPanel({
             </Typography>
           </Box>
         ) : (
-          <List>
-            {vocab.map((entry) => (
-              <ListItem
-                key={entry.word}
-                alignItems="flex-start"
-                secondaryAction={
-                  <Tooltip title="移除">
-                    <IconButton
-                      edge="end"
-                      onClick={() => onRemove(entry.word)}
-                      size="small"
+          <>
+            {/* Sync-state filter: 全部 / 未同步 / 已同步 */}
+            <Stack direction="row" spacing={0.75} sx={{ p: 1.5, pb: 0.5 }} flexWrap="wrap" useFlexGap>
+              <Chip
+                size="small"
+                label={`全部 ${vocab.length}`}
+                color={syncFilter === 'all' ? 'primary' : 'default'}
+                variant={syncFilter === 'all' ? 'filled' : 'outlined'}
+                clickable
+                onClick={() => setSyncFilter('all')}
+                data-testid="vocab-filter-all"
+              />
+              <Chip
+                size="small"
+                label={`未同步 ${unsyncedCount}`}
+                color={syncFilter === 'unsynced' ? 'primary' : 'default'}
+                variant={syncFilter === 'unsynced' ? 'filled' : 'outlined'}
+                clickable
+                disabled={unsyncedCount === 0}
+                onClick={() => setSyncFilter('unsynced')}
+                data-testid="vocab-filter-unsynced"
+              />
+              <Chip
+                size="small"
+                label={`已同步 ${syncedCount}`}
+                color={syncFilter === 'synced' ? 'primary' : 'default'}
+                variant={syncFilter === 'synced' ? 'filled' : 'outlined'}
+                clickable
+                disabled={syncedCount === 0}
+                onClick={() => setSyncFilter('synced')}
+                data-testid="vocab-filter-synced"
+              />
+            </Stack>
+            {shownVocab.length === 0 ? (
+              <Box sx={{ p: 3, textAlign: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  该筛选下没有单词。
+                </Typography>
+              </Box>
+            ) : (
+              <List>
+                {shownVocab.map((entry) => {
+                  const synced = isSynced(entry);
+                  return (
+                    <ListItem
+                      key={entry.word}
+                      alignItems="flex-start"
+                      secondaryAction={
+                        <Tooltip title="移除">
+                          <IconButton
+                            edge="end"
+                            onClick={() => onRemove(entry.word)}
+                            size="small"
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      }
                     >
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                }
-              >
-                <ListItemText
-                  primary={
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                        {entry.surface}
-                      </Typography>
-                      <Chip
-                        size="small"
-                        label={`${entry.video} · ${formatTime(entry.time)}`}
-                        sx={{ height: 20, fontSize: '0.7rem' }}
+                      <ListItemText
+                        primary={
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                              {entry.surface}
+                            </Typography>
+                            <Tooltip
+                              title={
+                                synced
+                                  ? '已同步到 Anki。点击改为未同步,下次同步会重新添加。'
+                                  : '尚未同步。点击改为已同步(适合已用其他方式导入 Anki 的词)。'
+                              }
+                            >
+                              <Chip
+                                size="small"
+                                label={synced ? '已同步' : '未同步'}
+                                color={synced ? 'success' : 'warning'}
+                                variant="outlined"
+                                clickable
+                                onClick={() => handleToggleSynced(entry)}
+                                data-testid={`vocab-sync-mark-${entry.word}`}
+                                sx={{ height: 20, fontSize: '0.7rem' }}
+                              />
+                            </Tooltip>
+                            <Chip
+                              size="small"
+                              label={`${entry.video} · ${formatTime(entry.time)}`}
+                              sx={{ height: 20, fontSize: '0.7rem' }}
+                            />
+                          </Stack>
+                        }
+                        secondary={
+                          <Box component="span" sx={{ display: 'block', mt: 0.5 }}>
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ fontStyle: 'italic' }}
+                            >
+                              {entry.sentence}
+                            </Typography>
+                            {entry.translation && (
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{ mt: 0.25 }}
+                                data-testid="vocab-translation"
+                              >
+                                {entry.translation}
+                              </Typography>
+                            )}
+                            {entry.definition && (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ display: 'block', mt: 0.5, whiteSpace: 'pre-wrap', lineHeight: 1.4 }}
+                              >
+                                {entry.definition}
+                              </Typography>
+                            )}
+                          </Box>
+                        }
                       />
-                    </Stack>
-                  }
-                  secondary={
-                    <Box component="span" sx={{ display: 'block', mt: 0.5 }}>
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ fontStyle: 'italic' }}
-                      >
-                        {entry.sentence}
-                      </Typography>
-                      {entry.translation && (
-                        <Typography
-                          variant="body2"
-                          color="text.secondary"
-                          sx={{ mt: 0.25 }}
-                          data-testid="vocab-translation"
-                        >
-                          {entry.translation}
-                        </Typography>
-                      )}
-                      {entry.definition && (
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ display: 'block', mt: 0.5, whiteSpace: 'pre-wrap', lineHeight: 1.4 }}
-                        >
-                          {entry.definition}
-                        </Typography>
-                      )}
-                    </Box>
-                  }
-                />
-              </ListItem>
-            ))}
-          </List>
+                    </ListItem>
+                  );
+                })}
+              </List>
+            )}
+          </>
         )}
       </Box>
     </Drawer>

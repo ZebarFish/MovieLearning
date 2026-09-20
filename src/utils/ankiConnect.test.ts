@@ -7,6 +7,8 @@ import {
   buildNoteFields,
   checkAnkiConnection,
   ensureAnkiModel,
+  getSyncedWords,
+  setWordSyncedManually,
   syncVocabToAnki,
 } from './ankiConnect';
 import {
@@ -291,6 +293,49 @@ describe('syncVocabToAnki', () => {
     await expect(
       syncVocabToAnki([entry('apple')], '绝望主妇', 'Nonexistent'),
     ).rejects.toThrow('笔记类型「Nonexistent」不存在');
+  });
+
+  it('never re-adds a manually marked word, even when Anki proves it absent', async () => {
+    // The user marked 'apple' by hand (e.g. imported it some other way).
+    // Anki's tag query runs and finds no such note — the manual mark must
+    // still win, because a human decision beats the automated check.
+    seedSyncedRecord('绝望主妇', [{ word: 'apple', manual: true }]);
+    respondByAction((action) => {
+      if (action === 'findNotes') return [5001];
+      if (action === 'notesInfo') {
+        return [{ fields: { Front: { value: 'OTHER' } } }];
+      }
+      if (action === 'addNotes') return [801];
+      return [];
+    });
+
+    const result = await syncVocabToAnki([entry('apple')], '绝望主妇', 'Basic');
+
+    expect(result.added).toBe(0);
+    expect(result.duplicates).toEqual([{ word: 'apple', deck: '绝望主妇' }]);
+    // The manual record was not touched by the sync.
+    expect(syncedRecordOf('绝望主妇')).toEqual([{ word: 'apple', manual: true }]);
+  });
+
+  it('setWordSyncedManually(false) lets the word sync again', async () => {
+    seedSyncedRecord('绝望主妇', [{ word: 'apple', manual: true }]);
+    setWordSyncedManually('绝望主妇', 'apple', false);
+    expect(getSyncedWords('绝望主妇').has('apple')).toBe(false);
+
+    respondByAction((action) => (action === 'addNotes' ? [901] : []));
+    const result = await syncVocabToAnki([entry('apple')], '绝望主妇', 'Basic');
+    expect(result.added).toBe(1);
+    expect(syncedRecordOf('绝望主妇')).toEqual([{ word: 'apple', noteId: 901 }]);
+  });
+
+  it('getSyncedWords / setWordSyncedManually round-trip (case-insensitive)', () => {
+    expect(getSyncedWords('Default').has('hello')).toBe(false);
+    setWordSyncedManually('Default', 'Hello', true);
+    expect(getSyncedWords('Default').has('hello')).toBe(true);
+    const stored = JSON.parse(
+      localStorage.getItem(SYNCED_KEY) ?? '{}',
+    ) as { Default: { word: string; manual?: boolean }[] };
+    expect(stored.Default).toEqual([{ word: 'hello', manual: true }]);
   });
 });
 

@@ -111,11 +111,15 @@ const SYNCED_KEY = 'learnTV.anki.syncedWords.v1';
 
 /**
  * One word we pushed into Anki, plus the id of the note created for it.
- * `noteId` is absent on records written by older versions.
+ * `noteId` is absent on records written by older versions. `manual` marks
+ * entries the user set by hand in the vocabulary panel (e.g. they imported
+ * the word into Anki some other way) — those are trusted as-is and never
+ * re-verified, so the sync never overrides a human decision.
  */
 interface SyncedNote {
   word: string;
   noteId?: number;
+  manual?: boolean;
 }
 
 /** Read the record, upgrading the legacy `string[]` shape on the way. */
@@ -176,6 +180,44 @@ function forgetSynced(deck: string, words: string[]): void {
   } else {
     delete all[deck];
   }
+  saveSyncedNotes(all);
+}
+
+/**
+ * Lowercase words currently recorded as synced for the deck. Display/filter
+ * source for the vocabulary panel — no Anki round-trip, so a word the user
+ * deleted in Anki may still show as synced here until the next sync runs its
+ * verification pass.
+ */
+export function getSyncedWords(deck: string): Set<string> {
+  return new Set((loadSyncedNotes()[deck] ?? []).map((r) => r.word));
+}
+
+/**
+ * User override from the vocabulary panel. `synced=false` drops the record so
+ * the next sync re-adds the word; `synced=true` writes a manual entry that
+ * dedupe trusts without Anki verification (see SyncedNote.manual).
+ */
+export function setWordSyncedManually(
+  deck: string,
+  word: string,
+  synced: boolean,
+): void {
+  const key = word.trim().toLowerCase();
+  if (!key) return;
+  if (!synced) {
+    forgetSynced(deck, [key]);
+    return;
+  }
+  const all = loadSyncedNotes();
+  const list = all[deck] ?? [];
+  const existing = list.find((r) => r.word === key);
+  if (existing) {
+    existing.manual = true;
+  } else {
+    list.push({ word: key, manual: true });
+  }
+  all[deck] = list;
   saveSyncedNotes(all);
 }
 
@@ -327,9 +369,10 @@ export async function syncVocabToAnki(
 
   // (b) Legacy entries written before note ids existed — the tag query is the
   //     only handle on them, and only a query that actually ran can prove a
-  //     word is gone.
+  //     word is gone. Manually marked entries skip verification entirely:
+  //     the user said this word is synced, so it stays synced.
   for (const r of withoutId) {
-    if (!tagged.ok || tagged.words.has(r.word)) {
+    if (r.manual || !tagged.ok || tagged.words.has(r.word)) {
       kept.push(r);
     } else {
       deletedInAnki.push(r.word);
