@@ -537,8 +537,9 @@ export interface AnkiModelStatus {
  *
  * Repairing is deliberately conservative: fields are only ADDED, and the
  * card template is only rewritten when it is missing or no longer contains
- * the pronunciation/definition expressions. A template the user has
- * deliberately customised is left alone.
+ * every marker we ship — the pronunciation/definition expressions and the
+ * 「拼写」 block. A template the user has deliberately customised is left
+ * alone.
  */
 export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
   const models = await listAnkiNoteTypes();
@@ -583,6 +584,11 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
   // A template installed before the nine-field model has the TTS line and the
   // original four sections but none of the dictionary-derived ones, so those
   // are checked too — otherwise an existing deck would never be upgraded.
+  //
+  // Every marker we add to CARD_BACK MUST be mirrored here. An existing deck
+  // only ever gets the new template when this predicate says it is stale, so
+  // leaving a marker out means older installs silently keep the old card
+  // forever (the trap the dictionary-field additions already hit once).
   const templateStale =
     !ours ||
     !ours.Front.includes(TTS_EXPRESSION) ||
@@ -591,7 +597,9 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
     !ours.Back.includes(FIELD_DEFINITION) ||
     !ours.Back.includes(FIELD_ENGLISH_DEFINITION) ||
     !ours.Back.includes(FIELD_FORMS) ||
-    !ours.Back.includes(FIELD_LEXICAL_TAGS);
+    !ours.Back.includes(FIELD_LEXICAL_TAGS) ||
+    // New 拼写 (spelling) block on the back of the card.
+    !ours.Back.includes('拼写');
 
   let templatesUpdated = false;
   if (templateStale) {
@@ -607,12 +615,15 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
     });
     // Same reasoning as the template check above: CSS installed before the
     // nine-field model carries `.word` but none of the newer rules, so testing
-    // for `.word` alone would leave 音标 / 词汇标记 unstyled forever.
+    // for `.word` alone would leave 音标 / 词汇标记 unstyled forever. `.spell`
+    // (the 拼写 block) is the newest rule and gets its own sentinel for the
+    // same reason — without it, existing installs never pick up the style.
     const css = styling?.css ?? '';
     const stylingStale =
       !css.includes('.word') ||
       !css.includes('.phonetic') ||
-      !css.includes('.tags');
+      !css.includes('.tags') ||
+      !css.includes('.spell');
     if (stylingStale) {
       await invoke('updateModelStyling', {
         model: { name: ANKI_MODEL_NAME, css: ANKI_CSS },

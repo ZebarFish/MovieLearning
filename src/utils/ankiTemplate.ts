@@ -18,6 +18,10 @@
  *
  * … plus a pronunciation: `{{tts en_US:单词}}` makes Anki synthesise and
  * play the word itself, so no audio files need to be shipped.
+ *
+ * The back of the card also carries a 「拼写」 block: it re-renders the word
+ * spaced out in a monospace face so the learner can verify the spelling
+ * letter by letter after recalling the meaning.
  */
 
 export const ANKI_MODEL_NAME = '听美剧学英语';
@@ -66,6 +70,11 @@ export const CARD_FRONT = `<div class="word">{{${FIELD_WORD}}}</div>
 export const CARD_BACK = `{{FrontSide}}
 
 <hr id="answer">
+
+<div class="section">
+  <div class="label">拼写</div>
+  <div class="value spell">{{${FIELD_WORD}}}</div>
+</div>
 
 <div class="section">
   <div class="label">单词释义</div>
@@ -163,6 +172,16 @@ hr#answer {
   color: #3c4658;
 }
 
+/* 拼写 block: keep the word readable letter by letter. This rule must stay
+   AFTER the .value rule — both are single-class selectors, so the later one
+   wins and .value would otherwise override the colour. */
+.spell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  letter-spacing: 0.35em;
+  color: #1b5e9c;
+}
+
 .night_mode .card,
 .nightMode .card {
   color: #e6e9f0;
@@ -197,6 +216,13 @@ hr#answer {
 .night_mode .sentence,
 .nightMode .sentence {
   color: #bfc6d4;
+}
+
+/* Appended last so it out-cascades the night-mode .value rule (same
+   specificity: whichever comes later wins). */
+.night_mode .spell,
+.nightMode .spell {
+  color: #7fb6e8;
 }`;
 
 /** Payload for AnkiConnect's `createModel` action. */

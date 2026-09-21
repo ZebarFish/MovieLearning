@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  ANKI_CSS,
   ANKI_FIELDS,
   ANKI_MODEL_NAME,
   CARD_BACK,
@@ -78,6 +79,41 @@ describe('ankiTemplate', () => {
     ]) {
       expect(CARD_BACK).toContain(`{{${field}}}`);
     }
+  });
+
+  it('shows the 拼写 block on the back, right after the answer rule', () => {
+    // The block re-renders the word itself (spaced out via .spell) so the
+    // learner can check the spelling letter by letter.
+    const spell = [
+      '<div class="label">拼写</div>',
+      `<div class="value spell">{{${FIELD_WORD}}}</div>`,
+    ];
+    for (const line of spell) {
+      expect(CARD_BACK).toContain(line);
+    }
+    // It must sit immediately after <hr id="answer">, i.e. before the first
+    // 释义 block — that is the reading order the card was designed around.
+    const answerAt = CARD_BACK.indexOf('<hr id="answer">');
+    const spellAt = CARD_BACK.indexOf('拼写');
+    const definitionAt = CARD_BACK.indexOf('单词释义');
+    expect(answerAt).toBeGreaterThanOrEqual(0);
+    expect(spellAt).toBeGreaterThan(answerAt);
+    expect(spellAt).toBeLessThan(definitionAt);
+  });
+
+  it('styles the 拼写 block with a monospace, letter-spaced face', () => {
+    expect(ANKI_CSS).toContain('.spell');
+    expect(ANKI_CSS).toContain('letter-spacing: 0.35em');
+    expect(ANKI_CSS).toContain(
+      'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    );
+    // `.spell` shares its element with `.value`, and both are single-class
+    // selectors — so it must be declared AFTER `.value` or the colour loses.
+    expect(ANKI_CSS.indexOf('.spell')).toBeGreaterThan(
+      ANKI_CSS.indexOf('.value {'),
+    );
+    // Night mode needs its own rule (it out-specifies the plain `.spell`).
+    expect(ANKI_CSS).toContain('.night_mode .spell');
   });
 
   it('builds a createModel payload with fields, css and one card template', () => {

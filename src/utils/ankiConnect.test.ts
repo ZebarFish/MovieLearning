@@ -18,8 +18,20 @@ import {
   CARD_BACK,
   CARD_FRONT,
   CARD_NAME,
+  FIELD_WORD,
 } from './ankiTemplate';
 import type { VocabWord } from '../types';
+
+/**
+ * The exact 拼写 section CARD_BACK ships, used to synthesise the "old"
+ * back template that an already-installed deck still has.
+ */
+const SPELL_SECTION = `<div class="section">
+  <div class="label">拼写</div>
+  <div class="value spell">{{${FIELD_WORD}}}</div>
+</div>
+
+`;
 
 const entry = (word: string): VocabWord => ({
   word,
@@ -580,6 +592,59 @@ describe('ensureAnkiModel', () => {
 
     expect(status.templatesUpdated).toBe(true);
     expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(true);
+  });
+
+  it('reinstalls styling that predates the 拼写 block', async () => {
+    // Regression sentinel: CSS from the previous release has `.word`,
+    // `.phonetic` and `.tags`, so the OLD freshness check called it up to
+    // date — and the newly added 拼写 block would stay unstyled forever.
+    const calls = trackCalls({
+      modelNames: () => [ANKI_MODEL_NAME],
+      modelFieldNames: () => [...ANKI_FIELDS],
+      modelTemplates: () => ({
+        [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
+      }),
+      modelStyling: () => ({
+        css: '.word { color: #1b5e9c; }\n.phonetic { color: #6b7488; }\n.tags { color: #8a93a5; }',
+      }),
+    });
+
+    await ensureAnkiModel();
+
+    const update = calls.find(
+      (c) => c['action'] === 'updateModelStyling',
+    ) as { params: { model: { css: string } } };
+    expect(update).toBeDefined();
+    expect(update.params.model.css).toContain('.spell');
+  });
+
+  it('reinstalls a back template that predates the 拼写 block', async () => {
+    // Regression sentinel: every one of the nine fields is present, so the
+    // OLD check passed — yet the 拼写 block is missing, and existing decks
+    // would never receive it.
+    const backWithoutSpell = CARD_BACK.replace(SPELL_SECTION, '');
+    expect(backWithoutSpell).not.toContain('拼写');
+    expect(backWithoutSpell).toContain('{{词汇标记}}');
+
+    const calls = trackCalls({
+      modelNames: () => [ANKI_MODEL_NAME],
+      modelFieldNames: () => [...ANKI_FIELDS],
+      modelTemplates: () => ({
+        [CARD_NAME]: { Front: CARD_FRONT, Back: backWithoutSpell },
+      }),
+      modelStyling: () => ({ css: ANKI_CSS }),
+    });
+
+    const status = await ensureAnkiModel();
+
+    expect(status.templatesUpdated).toBe(true);
+    const update = calls.find(
+      (c) => c['action'] === 'updateModelTemplates',
+    ) as {
+      params: { model: { templates: Record<string, { Back: string }> } };
+    };
+    expect(update).toBeDefined();
+    expect(update.params.model.templates[CARD_NAME]!.Back).toContain('拼写');
   });
 });
 
