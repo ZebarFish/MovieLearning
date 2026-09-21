@@ -82,8 +82,9 @@ describe('ankiTemplate', () => {
   });
 
   it('shows the 拼写 block on the back, right after the answer rule', () => {
-    // The block re-renders the word itself (spaced out via .spell) so the
-    // learner can check the spelling letter by letter.
+    // The block renders the word itself; CSS makes its glyphs transparent so
+    // it reads as blank underlines exactly as long as the word. The template
+    // genuinely still contains {{单词}} — only the styling changed.
     const spell = [
       '<div class="label">拼写</div>',
       `<div class="value spell">{{${FIELD_WORD}}}</div>`,
@@ -101,19 +102,29 @@ describe('ankiTemplate', () => {
     expect(spellAt).toBeLessThan(definitionAt);
   });
 
-  it('styles the 拼写 block with a monospace, letter-spaced face', () => {
+  it('styles the 拼写 block as blank underlines (invisible glyphs)', () => {
     expect(ANKI_CSS).toContain('.spell');
-    expect(ANKI_CSS).toContain('letter-spacing: 0.35em');
+    // The letters must be invisible: one underline per character cell, drawn
+    // with a repeated 1ch background tile.
+    expect(ANKI_CSS).toContain('color: transparent');
+    expect(ANKI_CSS).toContain('background-size: 1ch');
+    expect(ANKI_CSS).toContain('background-repeat: repeat-x');
     expect(ANKI_CSS).toContain(
       'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     );
+    // The rejected letter-spaced look must be gone for good.
+    expect(ANKI_CSS).not.toContain('letter-spacing: 0.35em');
     // `.spell` shares its element with `.value`, and both are single-class
     // selectors — so it must be declared AFTER `.value` or the colour loses.
     expect(ANKI_CSS.indexOf('.spell')).toBeGreaterThan(
       ANKI_CSS.indexOf('.value {'),
     );
-    // Night mode needs its own rule (it out-specifies the plain `.spell`).
+    // Night mode needs its own rule AND must re-assert transparency:
+    // .night_mode .value (0,2,0) out-specifies .spell (0,1,0), so without it
+    // the letters reappear in dark mode.
     expect(ANKI_CSS).toContain('.night_mode .spell');
+    const nightSpell = ANKI_CSS.slice(ANKI_CSS.indexOf('.night_mode .spell'));
+    expect(nightSpell).toContain('color: transparent');
   });
 
   it('builds a createModel payload with fields, css and one card template', () => {

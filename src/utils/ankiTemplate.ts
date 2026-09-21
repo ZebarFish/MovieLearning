@@ -19,9 +19,10 @@
  * … plus a pronunciation: `{{tts en_US:单词}}` makes Anki synthesise and
  * play the word itself, so no audio files need to be shipped.
  *
- * The back of the card also carries a 「拼写」 block: it re-renders the word
- * spaced out in a monospace face so the learner can verify the spelling
- * letter by letter after recalling the meaning.
+ * The back of the card also carries a 「拼写」 block: a fill-in-the-blank. It
+ * still renders the word, but with transparent glyphs, so all the learner
+ * sees is one blank underline per letter — enough to self-test the spelling
+ * after recalling the meaning. It is pure CSS: no extra Anki field is used.
  */
 
 export const ANKI_MODEL_NAME = '听美剧学英语';
@@ -172,14 +173,21 @@ hr#answer {
   color: #3c4658;
 }
 
-/* 拼写 block: keep the word readable letter by letter. This rule must stay
-   AFTER the .value rule — both are single-class selectors, so the later one
-   wins and .value would otherwise override the colour. */
+/* 拼写 block: a fill-in-the-blank. The template still renders {{单词}} so the
+   blanks are exactly as long as the word, but its glyphs are transparent —
+   all the learner sees is one underline per letter. A monospace face makes
+   one 1ch background tile line up with exactly one character cell. This rule
+   must stay AFTER the .value rule (both are single-class selectors). */
 .spell {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 600;
-  letter-spacing: 0.35em;
-  color: #1b5e9c;
+  letter-spacing: 0;
+  color: transparent;
+  padding-bottom: 4px;
+  background-image: linear-gradient(to right, #1b5e9c 72%, transparent 72%);
+  background-repeat: repeat-x;
+  background-size: 1ch 3px;
+  background-position: left bottom;
 }
 
 .night_mode .card,
@@ -219,10 +227,13 @@ hr#answer {
 }
 
 /* Appended last so it out-cascades the night-mode .value rule (same
-   specificity: whichever comes later wins). */
+   specificity: whichever comes later wins). color MUST be re-asserted to
+   transparent here — .night_mode .value (0,2,0) beats .spell (0,1,0), so
+   without this the letters become visible again in night mode. */
 .night_mode .spell,
 .nightMode .spell {
-  color: #7fb6e8;
+  color: transparent;
+  background-image: linear-gradient(to right, #7fb6e8 72%, transparent 72%);
 }`;
 
 /** Payload for AnkiConnect's `createModel` action. */

@@ -615,15 +615,21 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
     });
     // Same reasoning as the template check above: CSS installed before the
     // nine-field model carries `.word` but none of the newer rules, so testing
-    // for `.word` alone would leave 音标 / 词汇标记 unstyled forever. `.spell`
-    // (the 拼写 block) is the newest rule and gets its own sentinel for the
-    // same reason — without it, existing installs never pick up the style.
+    // for `.word` alone would leave 音标 / 词汇标记 unstyled forever.
+    //
+    // The 拼写 block gets its own marker, and that marker is deliberately NOT
+    // the class name: `.spell` shipped in an earlier release, so an install
+    // that already has it would pass a `.spell` check and keep the old
+    // rendering forever. We fingerprint the current *declaration* instead —
+    // `background-size: 1ch` only exists in the blank-underline version.
+    // Whenever the spelling rule changes again, replace this marker with
+    // something unique to the new CSS.
     const css = styling?.css ?? '';
     const stylingStale =
       !css.includes('.word') ||
       !css.includes('.phonetic') ||
       !css.includes('.tags') ||
-      !css.includes('.spell');
+      !css.includes('background-size: 1ch');
     if (stylingStale) {
       await invoke('updateModelStyling', {
         model: { name: ANKI_MODEL_NAME, css: ANKI_CSS },

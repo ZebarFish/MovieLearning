@@ -646,6 +646,44 @@ describe('ensureAnkiModel', () => {
     expect(update).toBeDefined();
     expect(update.params.model.templates[CARD_NAME]!.Back).toContain('拼写');
   });
+
+  it('reinstalls styling that has the old letter-spaced .spell rule', async () => {
+    // Regression sentinel for the redo: an install from the previous release
+    // already contains `.spell`, so a `.spell`-based check would call it fresh
+    // and the blank-underline CSS would never be pushed. Rebuild that old
+    // stylesheet from the current one — old `.spell` body, no blank CSS.
+    const oldSpacedSpellCss = ANKI_CSS.replace(
+      /\.spell \{[\s\S]*?\n\}/,
+      '.spell {\n  font-weight: 600;\n  letter-spacing: 0.35em;\n  color: #1b5e9c;\n}',
+    ).replace(
+      /\.night_mode \.spell,\n\.nightMode \.spell \{[\s\S]*?\n\}/,
+      '.night_mode .spell,\n.nightMode .spell {\n  color: #7fb6e8;\n}',
+    );
+    // Guard the derivation so the test can never silently become a no-op.
+    expect(oldSpacedSpellCss).toContain('.spell');
+    expect(oldSpacedSpellCss).toContain('letter-spacing: 0.35em');
+    expect(oldSpacedSpellCss).not.toContain('background-size: 1ch');
+
+    const calls = trackCalls({
+      modelNames: () => [ANKI_MODEL_NAME],
+      modelFieldNames: () => [...ANKI_FIELDS],
+      // Template is unchanged, so it must NOT be rewritten — this fix is
+      // CSS-only, which is exactly why every install picks it up instantly.
+      modelTemplates: () => ({
+        [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
+      }),
+      modelStyling: () => ({ css: oldSpacedSpellCss }),
+    });
+
+    await ensureAnkiModel();
+
+    const update = calls.find(
+      (c) => c['action'] === 'updateModelStyling',
+    ) as { params: { model: { css: string } } };
+    expect(update).toBeDefined();
+    expect(update.params.model.css).toContain('background-size: 1ch');
+    expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(false);
+  });
 });
 
 describe('syncVocabToAnki with the built-in note type', () => {
