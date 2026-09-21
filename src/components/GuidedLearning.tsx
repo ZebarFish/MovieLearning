@@ -33,7 +33,7 @@ const STAGES: { key: StudyStage; label: string; hint: string }[] = [
   { key: 'locate', label: '1 定位', hint: '在右侧字幕列表用每行的「起」「终」选择要学习的片段' },
   { key: 'blind', label: '2 盲听', hint: '字幕已隐藏。开了「循环 A-B」就循环播放，否则播到结尾自动停' },
   { key: 'dictation', label: '3 听写', hint: '右侧逐句听写：每句一个输入框，提交后逐句订正（可开关字幕）' },
-  { key: 'verify', label: '4 回听', hint: '订正后逐句回听：播放原声，对照自己的听写，确认每句都听清了' },
+  { key: 'verify', label: '4 回听', hint: '订正后回听整段：播放选中片段，对照自己的听写，确认整段都听清了' },
   { key: 'shadow', label: '5 跟读', hint: '右侧逐句跟读：播放原声 → 录音 → 回放对比 + 朗读打分（可开关字幕）' },
   { key: 'collect', label: '6 收词', hint: '右侧把之前写错的词手动收入词库（再点一次取消），完成后标记已学' },
 ];
@@ -374,7 +374,7 @@ export function DictationPanel({
 }
 
 // ---------------------------------------------------------------------------
-// 回听验证(逐句):订正后逐句重听原声,对照自己的听写确认
+// 回听验证(整段):订正后回听整个选中片段,对照自己的听写,整段确认一次
 // ---------------------------------------------------------------------------
 
 export function VerifyPanel({
@@ -382,6 +382,7 @@ export function VerifyPanel({
   typed,
   results,
   onReplayCue,
+  onReplaySegment,
   onRetry,
   onNext,
   subtitleVisible,
@@ -394,17 +395,17 @@ export function VerifyPanel({
   /** cueIndex -> diff result (present after dictation submission) */
   results: Record<number, DiffResult> | null;
   onReplayCue: (cue: SubtitleCue) => void;
+  /** Replay the whole selected segment (A-B set to the segment, auto-stops
+   *  at the end). Provided by App via handlePlaySegment. */
+  onReplaySegment: () => void;
   onRetry: () => void;
   onNext: () => void;
   subtitleVisible: boolean;
   onToggleSubtitle: () => void;
   displayMode?: SubtitleDisplayMode;
 }): JSX.Element {
-  const [confirmed, setConfirmed] = useState<Record<number, boolean>>({});
-  const confirmedCount = cues.filter((c) => confirmed[c.index]).length;
-  const allConfirmed = cues.length > 0 && confirmedCount === cues.length;
-  const toggle = (cueIndex: number): void =>
-    setConfirmed((prev) => ({ ...prev, [cueIndex]: !prev[cueIndex] }));
+  // 整段确认:一次即可,不再逐句确认。
+  const [confirmed, setConfirmed] = useState<boolean>(false);
   return (
     <PanelShell
       title="👂 回听验证"
@@ -412,12 +413,20 @@ export function VerifyPanel({
     >
       <Stack spacing={1}>
         <Typography variant="caption" color="text.secondary">
-          逐句回听原声，对照自己的听写。都听清了就打 ✓，有疑问可以回去重新听写。
+          回听整段：播放选中片段，对照自己的听写，确认整段都听清了。下方逐句列表仅供对照。
         </Typography>
+        <Button
+          variant="contained"
+          startIcon={<PlayArrowIcon />}
+          onClick={onReplaySegment}
+          data-testid="verify-replay-segment"
+          sx={{ alignSelf: 'flex-start' }}
+        >
+          ▶ 回听整段
+        </Button>
         <List dense disablePadding>
           {cues.map((cue) => {
             const result = results?.[cue.index];
-            const ok = !!confirmed[cue.index];
             return (
               <ListItem
                 key={cue.index}
@@ -440,15 +449,6 @@ export function VerifyPanel({
                   >
                     重听这句
                   </Button>
-                  <Button
-                    size="small"
-                    variant={ok ? 'contained' : 'outlined'}
-                    color={ok ? 'success' : 'inherit'}
-                    data-testid={`verify-confirm-${cue.index}`}
-                    onClick={() => toggle(cue.index)}
-                  >
-                    {ok ? '✓ 已确认' : '听清了，确认'}
-                  </Button>
                 </Stack>
                 <Typography variant="body2" sx={{ mb: result ? 0 : 0.5 }}>
                   你的听写:{typed[cue.index]?.trim() || '(空)'}
@@ -459,9 +459,15 @@ export function VerifyPanel({
           })}
         </List>
         <Stack direction="row" spacing={1} alignItems="center">
-          <Typography variant="caption" color="text.secondary">
-            已确认 {confirmedCount}/{cues.length}
-          </Typography>
+          <Button
+            size="small"
+            variant={confirmed ? 'contained' : 'outlined'}
+            color={confirmed ? 'success' : 'inherit'}
+            data-testid="verify-confirm-segment"
+            onClick={() => setConfirmed((v) => !v)}
+          >
+            {confirmed ? '✓ 整段已确认' : '听清了，确认整段'}
+          </Button>
           <Box sx={{ flexGrow: 1 }} />
           <Button size="small" variant="outlined" onClick={onRetry}>
             重新听写
@@ -469,7 +475,7 @@ export function VerifyPanel({
           <Button
             size="small"
             variant="contained"
-            disabled={!allConfirmed}
+            disabled={!confirmed}
             onClick={onNext}
           >
             下一步：跟读 →

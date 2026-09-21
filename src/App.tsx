@@ -690,6 +690,7 @@ export default function App(): JSX.Element {
               typed={typedByIndex}
               results={diffByIndex}
               onReplayCue={playCueOnce}
+              onReplaySegment={handlePlaySegment}
               onRetry={() => {
                 handleDictationRetry();
                 setStudyStage('dictation');
