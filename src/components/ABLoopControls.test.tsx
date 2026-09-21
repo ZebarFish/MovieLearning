@@ -1,18 +1,18 @@
 /**
- * Regression tests for ABLoopControls' "stop at B when the loop is off" path.
+ * Contract tests for ABLoopControls' segment policing.
  *
- * The user-reported bug: with the loop OFF, setting A and then setting B made
- * both markers vanish. Placing B stores `pointB === video.currentTime`, and
- * the old check treated "playhead is at/after B" as "playback reached B", so
- * the stop fired on the next frame, paused the video and cleared the markers.
+ * The frozen contract (fifth round of user feedback):
+ *   A1  loop OFF, user-set A+B: playback reaching B parks on B and pauses, and
+ *       the markers are KEPT (this is the "setting B wipes A/B" regression).
+ *   A2  parked on B, pressing play restarts the segment from A.
+ *   A3  the user dragging the playhead past B escapes the segment: no
+ *       hold-at-B, no play-jump back to A.
+ *   A4  a lone A (no B) or no markers never intervenes.
+ *   B   loop ON: reaching B jumps back to A and keeps playing.
+ *   C   a one-shot pair (听写「重听这句」/ 跟读「原声」) is dropped at B.
  *
- * The fix requires the playhead to have actually been observed *before* B
- * since the current pair was installed. These tests assert BOTH halves of
- * that contract so the 9277d3b "play once, stop at B" behaviour is not
- * silently deleted while the false-fire is removed.
- *
- * rAF is stubbed so the frame-driven check runs only when we say so — this is
- * what makes the "does it fire on the next frame?" question deterministic.
+ * rAF is stubbed so the frame-driven check runs only when we say so; jsdom
+ * fires no real media events, so `play`/`seeked` are dispatched by hand.
  */
 import { useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,7 +22,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from '@testing-library/react';
 import { ABLoopControls } from './ABLoopControls';
 import type { ABLoopState, VideoSource } from '../types';
@@ -95,15 +94,20 @@ function makeVideo(): FakeVideo {
 function Harness({
   video,
   onChange,
+  initialLoop,
 }: {
   video: HTMLMediaElement;
   onChange: (next: ABLoopState) => void;
+  initialLoop?: ABLoopState;
 }): JSX.Element {
-  const [loop, setLoop] = useState<ABLoopState>({
-    pointA: null,
-    pointB: null,
-    enabled: false,
-  });
+  const [loop, setLoop] = useState<ABLoopState>(
+    initialLoop ?? {
+      pointA: null,
+      pointB: null,
+      enabled: false,
+      oneShot: false,
+    },
+  );
   const videoRef = useRef<HTMLMediaElement>(video);
   const handleLoopChange = (next: ABLoopState): void => {
     onChange(next);
@@ -129,69 +133,129 @@ function clickSetMarker(label: '设 A 点' | '设 B 点' | '重新设 A'): void 
   fireEvent.click(screen.getByRole('button', { name: label }));
 }
 
-describe('ABLoopControls stop-at-B', () => {
-  it('does not wipe the markers when B is placed at the current playhead', () => {
+/** Install a user-set A=10 / B=20 pair through the real button flow. */
+function installUserPair(media: FakeVideo): void {
+  media.setTime(10);
+  clickSetMarker('设 A 点');
+  runFrame();
+  media.setTime(20);
+  clickSetMarker('设 B 点');
+  runFrame();
+}
+
+describe('ABLoopControls contract', () => {
+  it('A1: setting B at the playhead keeps both markers and parks on B', () => {
     const media = makeVideo();
     const onChange = vi.fn();
     render(<Harness video={media.video} onChange={onChange} />);
-
-    // Bind the component's frame loop + listeners.
     runFrame();
 
-    // 1. Set A at 10s.
-    media.setTime(10);
-    clickSetMarker('设 A 点');
-    runFrame();
-    expect(onChange).toHaveBeenLastCalledWith(
-      expect.objectContaining({ pointA: 10, pointB: null }),
-    );
-
-    // 2. Move the playhead to 20s and set B *there* — the reported failure.
-    onChange.mockClear();
-    media.setTime(20);
-    clickSetMarker('设 B 点');
-    runFrame();
+    installUserPair(media);
     runFrame();
 
-    // Both markers must survive: no pause, and never a cleared state.
-    expect(media.pause).not.toHaveBeenCalled();
+    // The core user complaint: neither marker may ever be cleared.
     const emitted = onChange.mock.calls.map((c) => c[0] as ABLoopState);
     expect(emitted.length).toBeGreaterThan(0);
     for (const state of emitted) {
-      expect(state.pointA).toBe(10);
-      expect(state.pointB).toBe(20);
+      expect(state.pointA === null && state.pointB === null).toBe(false);
     }
     expect(screen.getByTestId('a').textContent).toBe('10');
     expect(screen.getByTestId('b').textContent).toBe('20');
+
+    // Stopping at B is expected and normal: the playhead parks there.
+    expect(media.pause).toHaveBeenCalled();
+    expect(media.video.currentTime).toBe(20);
   });
 
-  it('still stops at B once playback has genuinely entered the segment', async () => {
+  it('A2: pressing play while parked on B restarts the segment from A', () => {
     const media = makeVideo();
     const onChange = vi.fn();
     render(<Harness video={media.video} onChange={onChange} />);
     runFrame();
 
-    // Install A=10 then B=20 (B placed at the playhead — must NOT stop).
-    media.setTime(10);
-    clickSetMarker('设 A 点');
-    runFrame();
-    media.setTime(20);
-    clickSetMarker('设 B 点');
-    runFrame();
-    expect(media.pause).not.toHaveBeenCalled();
+    installUserPair(media);
+    expect(media.video.currentTime).toBe(20);
+    expect(screen.getByTestId('a').textContent).toBe('10');
 
-    // Playback runs inside the segment (15 < B): the latch arms, still no stop.
+    // jsdom fires no real media events — drive `play` by hand.
+    media.video.dispatchEvent(new Event('play'));
+    expect(media.video.currentTime).toBe(10);
+  });
+
+  it('A3: dragging past B escapes the segment — no grab-back, no play-jump', () => {
+    const media = makeVideo();
+    render(
+      <Harness
+        video={media.video}
+        onChange={vi.fn()}
+        initialLoop={{ pointA: 10, pointB: 20, enabled: false, oneShot: false }}
+      />,
+    );
+    runFrame();
+
+    media.setTime(25);
+    media.video.dispatchEvent(new Event('seeked'));
+    runFrame();
+    // The segment must not pull the playhead back to B.
+    expect(media.video.currentTime).toBe(25);
+
+    media.video.dispatchEvent(new Event('play'));
+    // …nor jump back to A when the user resumes.
+    expect(media.video.currentTime).toBe(25);
+  });
+
+  it('A4: a lone A (no B) never intervenes with playback', () => {
+    const media = makeVideo();
+    render(
+      <Harness
+        video={media.video}
+        onChange={vi.fn()}
+        initialLoop={{ pointA: 10, pointB: null, enabled: false, oneShot: false }}
+      />,
+    );
+    runFrame();
+
     media.setTime(15);
     runFrame();
+    media.video.dispatchEvent(new Event('play'));
     expect(media.pause).not.toHaveBeenCalled();
+    expect(media.video.currentTime).toBe(15);
+  });
 
-    // Reaching B now stops playback and clears the markers (9277d3b contract).
+  it('B: with the loop on, reaching B jumps back to A and continues', () => {
+    const media = makeVideo();
+    render(
+      <Harness
+        video={media.video}
+        onChange={vi.fn()}
+        initialLoop={{ pointA: 10, pointB: 20, enabled: true, oneShot: false }}
+      />,
+    );
+    runFrame();
+
     media.setTime(20.2);
     runFrame();
-    await waitFor(() => expect(media.pause).toHaveBeenCalled());
-    await waitFor(() =>
-      expect(screen.getByTestId('a').textContent).toBe('null'),
+    expect(media.video.currentTime).toBe(10);
+    expect(media.play).toHaveBeenCalled();
+  });
+
+  it('C: a one-shot pair is dropped once it stops at the cue end', () => {
+    const media = makeVideo();
+    render(
+      <Harness
+        video={media.video}
+        onChange={vi.fn()}
+        initialLoop={{ pointA: 30, pointB: 32, enabled: false, oneShot: true }}
+      />,
     );
+    runFrame();
+
+    media.setTime(32.2);
+    runFrame();
+    expect(media.pause).toHaveBeenCalled();
+    expect(media.video.currentTime).toBe(32);
+    // The scoped pair belongs to the replay, not the user: it is cleared.
+    expect(screen.getByTestId('a').textContent).toBe('null');
     expect(screen.getByTestId('b').textContent).toBe('null');
   });
 });

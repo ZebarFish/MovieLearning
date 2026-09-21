@@ -115,6 +115,7 @@ const INITIAL_LOOP: ABLoopState = {
   pointA: null,
   pointB: null,
   enabled: false,
+  oneShot: false,
 };
 
 type DrawerKind = 'media' | 'steps' | null;
@@ -297,6 +298,9 @@ export default function App(): JSX.Element {
           ...prevLoop,
           pointA: next.startTime,
           pointB: next.endTime,
+          // Syncing the segment bounds is an ordinary user-facing marker pair,
+          // never a one-shot cue replay.
+          oneShot: false,
         }));
         return next;
       });
@@ -311,6 +315,7 @@ export default function App(): JSX.Element {
       pointA: segment.startTime,
       pointB: segment.endTime,
       enabled: prev.enabled,
+      oneShot: false,
     }));
     setSubtitleVisible(false);
     setBlindPlays(0);
@@ -328,6 +333,8 @@ export default function App(): JSX.Element {
       pointA: segment.startTime,
       pointB: segment.endTime,
       enabled: prev.enabled,
+      // Replaying the whole segment is an ordinary marker pair, not a one-shot.
+      oneShot: false,
     }));
     seek(segment.startTime);
     void videoRef.current?.play();
@@ -339,9 +346,11 @@ export default function App(): JSX.Element {
    *
    * The stop is not a timer — it reuses the A-B machinery: syncing the loop
    * markers to the cue bounds makes ABLoopControls behave correctly for free.
-   * With 循环 A-B off, playback pauses at the sentence end (the dictation
-   * semantic); with it on, the sentence itself repeats, which is what 逐句
-   * listening wants anyway.
+   * These markers are flagged `oneShot: true`: they belong to this scoped
+   * replay (听写「重听这句」 and 跟读「原声」 both route through here, so the
+   * two stay consistent), and ABLoopControls drops them once playback stops at
+   * the cue end instead of leaving them behind for the user to trip over.
+   * User-set markers are never one-shot and are kept.
    */
   const playCueOnce = useCallback(
     (cue: SubtitleCue): void => {
@@ -349,6 +358,7 @@ export default function App(): JSX.Element {
         pointA: cue.start,
         pointB: cue.end,
         enabled: prev.enabled,
+        oneShot: true,
       }));
       seek(cue.start);
       void videoRef.current?.play();
@@ -363,7 +373,7 @@ export default function App(): JSX.Element {
     setTypedByIndex({});
     setDiffByIndex(null);
     setSubtitleVisible(true);
-    setLoop((prev) => ({ ...prev, enabled: false }));
+    setLoop((prev) => ({ ...prev, enabled: false, oneShot: false }));
   }, []);
 
   const markLearnedCues = useCallback(

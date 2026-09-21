@@ -1,23 +1,24 @@
 /**
  * ABLoopControls
  *
- * Three buttons under the video: "设 A 点", "设 B 点", "循环 A-B". Also has
- * a clear button. Uses an effect to monitor `currentTime` and snap back to
- * point A once playback reaches point B.
+ * Three buttons under the video: "设 A 点", "设 B 点", "循环 A-B". Also has a
+ * clear button. An effect watches the playhead and polices the segment.
  *
  * The "set A / set B" rules:
  *   - If A is unset OR currentTime < A → set A (clear B)
  *   - Else if B is unset and currentTime > A → set B
  *   - Else → reset and start over (set A at current time)
  *
- * Loop OFF means "play once, stop at B": the playhead is held at B and the
- * markers are cleared so a later manual play is not dragged back. The
- * stop-at-B branch is gated on the playhead having actually been observed
- * *before* B since the current pair was installed (see `enteredSegmentRef`).
- * Placing B at the playhead stores `pointB === currentTime`, which is NOT the
- * same fact as "playback reached B" — without the latch the stop fires on the
- * very next frame, pauses the video and wipes the markers the user just set.
- * Do not "simplify" that latch away.
+ * 循环 A-B OFF — "play once, stop at B", and the markers are KEPT:
+ *   - playback reaching B parks the playhead on B and pauses;
+ *   - pressing play while parked on B restarts the segment from A;
+ *   - dragging the playhead past B is the user escaping the segment, so
+ *     nothing grabs it back until the markers change or the playhead returns.
+ * Only a pair flagged `oneShot` — installed by the app for a single scoped cue
+ * replay (听写「重听这句」 / 跟读「原声」) — is dropped once it stops at B;
+ * user-set markers are never one-shot.
+ *
+ * 循环 A-B ON — unchanged: reaching B jumps back to A and keeps playing.
  */
 import { useCallback, useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
@@ -75,61 +76,34 @@ export function ABLoopControls({
   // Keep the latest loop state in a ref so the timeupdate handler (registered
   // once) always reads fresh values without re-binding every state change.
   const loopRef = useRef<ABLoopState>(loop);
-  // True once this marker pair has stopped playback at B and been cleared —
-  // guards against re-clearing every rAF frame until new markers arrive.
-  const stopDisarmedRef = useRef(false);
-  // True once the playhead has been observed *before* B since the current
-  // marker pair was installed. Placing B at the playhead (currentTime ===
-  // pointB) must not count as "reaching" B — otherwise the stop-at-B branch
-  // fires on the very next frame, pauses the video and clears both markers the
-  // user just set. A pair the playhead has not entered yet has not been played
-  // through, so it cannot have been "reached". This is the fix for the
-  // "setting B wipes A and B" bug — keep the latch.
-  const enteredSegmentRef = useRef(false);
   // Previous marker VALUES, used to detect a genuine A/B change: the `loop`
   // object identity also changes on unrelated updates (e.g. the enabled
-  // toggle), and those must NOT re-arm the stop.
+  // toggle), and those must not be mistaken for a new segment.
   const markersRef = useRef<{ a: number | null; b: number | null }>({
     a: loop.pointA,
     b: loop.pointB,
   });
+  // True while the playhead sits deliberately *past* B (the user dragged the
+  // progress bar beyond the segment). The segment must not grab it back then:
+  // no hold-at-B, no "restart from A" on play. Cleared when the marker pair
+  // changes or the playhead returns to/inside the segment.
+  const pastBRef = useRef(false);
   useEffect(() => {
     loopRef.current = loop;
-    // Fresh markers re-arm the stop-at-B behaviour.
-    if (loop.pointA !== null || loop.pointB !== null) {
-      stopDisarmedRef.current = false;
-    }
-    // A new marker PAIR invalidates the "playhead entered the segment" latch:
-    // the pair has not been played through yet, so it cannot be "reached".
+    // A new marker PAIR starts a fresh segment: forget any previous escape.
     if (
       markersRef.current.a !== loop.pointA ||
       markersRef.current.b !== loop.pointB
     ) {
       markersRef.current = { a: loop.pointA, b: loop.pointB };
-      enteredSegmentRef.current = false;
-      // …unless the playhead already sits strictly *before* B the moment the
-      // pair is installed, in which case the segment HAS been entered. Arming
-      // here — rather than waiting for the next rAF/timeupdate frame — matters
-      // for scripted cue replay: App seeks to cue.start and a caller may jump
-      // the playhead straight past B before any frame observes the in-segment
-      // position. Placing B at the playhead still cannot arm it, because then
-      // currentTime === pointB and the `< pointB - 0.05` guard is false.
-      const video = videoRef.current;
-      if (
-        video !== null &&
-        loop.pointA !== null &&
-        loop.pointB !== null &&
-        video.currentTime < loop.pointB - 0.05
-      ) {
-        enteredSegmentRef.current = true;
-      }
+      pastBRef.current = false;
     }
   }, [loop]);
 
-  // Effect: when playback reaches B, jump back to A and continue playing.
-  // The <video> element is conditionally rendered (only with a loaded
-  // source), so we must NOT capture it once here — read videoRef.current
-  // on every frame and attach event listeners lazily as soon as it mounts.
+  // Effect: police the segment as the playhead moves. The <video> element is
+  // conditionally rendered (only with a loaded source), so we must NOT capture
+  // it once here — read videoRef.current on every frame and attach event
+  // listeners lazily as soon as it mounts.
   useEffect(() => {
     let rafId: number | null = null;
     let video: HTMLMediaElement | null = null;
@@ -143,46 +117,62 @@ export function ABLoopControls({
       if (!listenersBound) {
         listenersBound = true;
         video.addEventListener('timeupdate', checkAndLoopBack);
-        video.addEventListener('seeked', checkAndLoopBack);
+        video.addEventListener('seeked', handleSeeked);
+        video.addEventListener('play', handlePlay);
       }
 
       const liveLoop = loopRef.current;
-      // Loop disabled: if markers exist, stop at B instead of looping
-      // (segment study relies on this "play once, stop at end" semantic).
-      if (!liveLoop.enabled) {
-        if (liveLoop.pointA !== null && liveLoop.pointB !== null) {
-          if (video.currentTime < liveLoop.pointB - 0.05) {
-            // Playback is genuinely inside the segment — arm the stop. This
-            // must happen BEFORE B can fire, so merely placing B at the
-            // playhead (currentTime === pointB) does not count as reaching it.
-            enteredSegmentRef.current = true;
-          } else if (
-            enteredSegmentRef.current &&
-            video.currentTime >= liveLoop.pointB
-          ) {
-            video.currentTime = liveLoop.pointB;
-            video.pause();
-            // Disarm the stop: clear the markers so a manual play afterwards
-            // is not dragged back to B forever. The next scoped replay
-            // (重听这句 / 原声 / segment play) re-arms them itself.
-            if (!stopDisarmedRef.current) {
-              stopDisarmedRef.current = true;
-              onLoopChange(clearABLoop());
-            }
-          }
-        }
+      const { pointA, pointB } = liveLoop;
+      if (pointA === null || pointB === null) return;
+
+      if (liveLoop.enabled) {
+        const now = video.currentTime;
+        // Guard against an infinite re-seek loop: only fire once B is actually
+        // reached, and bail right after jumping back to A.
+        if (now < pointB) return;
+        if (now < pointA + 0.05) return;
+        video.currentTime = pointA;
+        pastBRef.current = false;
+        if (video.paused) void video.play();
         return;
       }
-      if (liveLoop.pointA === null || liveLoop.pointB === null) return;
-      const now = video.currentTime;
-      // Snap back when reaching or passing B. We also bail when now is very
-      // small (just jumped back) to prevent an infinite re-seek loop.
-      if (now < liveLoop.pointB) return;
-      if (now < liveLoop.pointA + 0.05) return;
-      video.currentTime = liveLoop.pointA;
-      if (video.paused) {
-        void video.play();
+
+      // Loop off: "play once, stop at B". The markers are KEPT — pressing play
+      // while parked at B restarts the segment from A (see handlePlay).
+      if (pastBRef.current) return;
+      if (video.currentTime < pointB) return;
+      video.currentTime = pointB;
+      video.pause();
+      if (liveLoop.oneShot === true) {
+        // App-installed pair (听写「重听这句」 / 跟读「原声」): it belongs to the
+        // scoped replay, not to the user, so drop it once the cue is done.
+        // Clearing makes this branch unreachable on the following frames.
+        onLoopChange(clearABLoop());
       }
+    };
+
+    // The user dragged the progress bar beyond the segment: let go of it.
+    const handleSeeked = (): void => {
+      const el = videoRef.current;
+      if (!el) return;
+      const liveLoop = loopRef.current;
+      if (liveLoop.pointB === null) {
+        pastBRef.current = false;
+        return;
+      }
+      pastBRef.current = el.currentTime > liveLoop.pointB + 0.05;
+    };
+
+    // Parked at/after B with a user-set pair: play the segment again from A.
+    const handlePlay = (): void => {
+      const el = videoRef.current;
+      if (!el) return;
+      const liveLoop = loopRef.current;
+      if (liveLoop.enabled) return;
+      if (liveLoop.pointA === null || liveLoop.pointB === null) return;
+      if (pastBRef.current) return;
+      if (el.currentTime < liveLoop.pointB) return;
+      el.currentTime = liveLoop.pointA;
     };
 
     const tick = (): void => {
@@ -196,7 +186,8 @@ export function ABLoopControls({
         cancelAnimationFrame(rafId);
       }
       video?.removeEventListener('timeupdate', checkAndLoopBack);
-      video?.removeEventListener('seeked', checkAndLoopBack);
+      video?.removeEventListener('seeked', handleSeeked);
+      video?.removeEventListener('play', handlePlay);
     };
   }, [videoRef]);
 

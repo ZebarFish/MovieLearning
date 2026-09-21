@@ -7,13 +7,23 @@ const empty: ABLoopState = { pointA: null, pointB: null, enabled: false };
 describe('nextABState', () => {
   it('empty -> sets A when no points defined', () => {
     const next = nextABState(empty, 10);
-    expect(next).toEqual({ pointA: 10, pointB: null, enabled: false });
+    expect(next).toEqual({
+      pointA: 10,
+      pointB: null,
+      enabled: false,
+      oneShot: false,
+    });
   });
 
   it('when A is set and B unset, sets B', () => {
     const state: ABLoopState = { pointA: 10, pointB: null, enabled: false };
     const next = nextABState(state, 20);
-    expect(next).toEqual({ pointA: 10, pointB: 20, enabled: false });
+    expect(next).toEqual({
+      pointA: 10,
+      pointB: 20,
+      enabled: false,
+      oneShot: false,
+    });
   });
 
   it('does not mutate input', () => {
@@ -29,7 +39,12 @@ describe('nextABState', () => {
       enabled: true,
     };
     const next = nextABState(state, 50);
-    expect(next).toEqual({ pointA: 50, pointB: null, enabled: false });
+    expect(next).toEqual({
+      pointA: 50,
+      pointB: null,
+      enabled: false,
+      oneShot: false,
+    });
   });
 
   it('currentTime < A replaces A with new earlier time', () => {
@@ -86,6 +101,11 @@ describe('shouldLoopBack', () => {
 
 describe('clearABLoop', () => {
   it('returns an empty state regardless of input', () => {
-    expect(clearABLoop()).toEqual({ pointA: null, pointB: null, enabled: false });
+    expect(clearABLoop()).toEqual({
+      pointA: null,
+      pointB: null,
+      enabled: false,
+      oneShot: false,
+    });
   });
 });

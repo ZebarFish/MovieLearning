@@ -126,6 +126,13 @@ export interface ABLoopState {
   pointB: number | null;
   /** Whether the loop is currently active. */
   enabled: boolean;
+  /**
+   * True when this marker pair was installed by the app for a one-shot scoped
+   * replay (听写「重听这句」/ 跟读「原声」) instead of by the user. A one-shot
+   * pair is dropped again as soon as playback stops at B; a user-set pair is
+   * kept so pressing play restarts the segment from A.
+   */
+  oneShot?: boolean;
 }
 
 /** Step key identifier used in the learning step indicator. */

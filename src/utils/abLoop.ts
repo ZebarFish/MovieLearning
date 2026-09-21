@@ -13,6 +13,9 @@ import type { ABLoopState } from '../types';
  *   - else if B is unset or currentTime <= B: set B
  *   - else (both set): reset and treat this click as setting a new A
  *
+ * Every branch clears `oneShot`: markers the user sets by hand are ordinary
+ * segment markers and must survive stopping at B.
+ *
  * Returns a new ABLoopState without mutating the input.
  */
 export function nextABState(
@@ -23,20 +26,30 @@ export function nextABState(
 
   // No A yet, or currentTime is before A → set A.
   if (pointA === null || currentTime < pointA) {
-    return { pointA: currentTime, pointB: null, enabled: false };
+    return {
+      pointA: currentTime,
+      pointB: null,
+      enabled: false,
+      oneShot: false,
+    };
   }
 
   // A is set, B unset. Only set B if it is strictly after A.
   // A zero-width loop (A === B) is useless and confusing, so we ignore it.
   if (pointB === null) {
     if (currentTime <= pointA) {
-      return { ...current };
+      return { ...current, oneShot: false };
     }
-    return { pointA, pointB: currentTime, enabled: false };
+    return { pointA, pointB: currentTime, enabled: false, oneShot: false };
   }
 
   // Both A and B set: start a fresh loop with A at current time.
-  return { pointA: currentTime, pointB: null, enabled: false };
+  return {
+    pointA: currentTime,
+    pointB: null,
+    enabled: false,
+    oneShot: false,
+  };
 }
 
 /** Return true if the currentTime is at or past point B and a loop is active. */
@@ -52,5 +65,5 @@ export function shouldLoopBack(state: ABLoopState, currentTime: number): boolean
 
 /** Reset all loop state. */
 export function clearABLoop(): ABLoopState {
-  return { pointA: null, pointB: null, enabled: false };
+  return { pointA: null, pointB: null, enabled: false, oneShot: false };
 }
