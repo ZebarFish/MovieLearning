@@ -9,6 +9,15 @@
  *   - If A is unset OR currentTime < A → set A (clear B)
  *   - Else if B is unset and currentTime > A → set B
  *   - Else → reset and start over (set A at current time)
+ *
+ * Loop OFF means "play once, stop at B": the playhead is held at B and the
+ * markers are cleared so a later manual play is not dragged back. The
+ * stop-at-B branch is gated on the playhead having actually been observed
+ * *before* B since the current pair was installed (see `enteredSegmentRef`).
+ * Placing B at the playhead stores `pointB === currentTime`, which is NOT the
+ * same fact as "playback reached B" — without the latch the stop fires on the
+ * very next frame, pauses the video and wipes the markers the user just set.
+ * Do not "simplify" that latch away.
  */
 import { useCallback, useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
@@ -69,11 +78,51 @@ export function ABLoopControls({
   // True once this marker pair has stopped playback at B and been cleared —
   // guards against re-clearing every rAF frame until new markers arrive.
   const stopDisarmedRef = useRef(false);
+  // True once the playhead has been observed *before* B since the current
+  // marker pair was installed. Placing B at the playhead (currentTime ===
+  // pointB) must not count as "reaching" B — otherwise the stop-at-B branch
+  // fires on the very next frame, pauses the video and clears both markers the
+  // user just set. A pair the playhead has not entered yet has not been played
+  // through, so it cannot have been "reached". This is the fix for the
+  // "setting B wipes A and B" bug — keep the latch.
+  const enteredSegmentRef = useRef(false);
+  // Previous marker VALUES, used to detect a genuine A/B change: the `loop`
+  // object identity also changes on unrelated updates (e.g. the enabled
+  // toggle), and those must NOT re-arm the stop.
+  const markersRef = useRef<{ a: number | null; b: number | null }>({
+    a: loop.pointA,
+    b: loop.pointB,
+  });
   useEffect(() => {
     loopRef.current = loop;
     // Fresh markers re-arm the stop-at-B behaviour.
     if (loop.pointA !== null || loop.pointB !== null) {
       stopDisarmedRef.current = false;
+    }
+    // A new marker PAIR invalidates the "playhead entered the segment" latch:
+    // the pair has not been played through yet, so it cannot be "reached".
+    if (
+      markersRef.current.a !== loop.pointA ||
+      markersRef.current.b !== loop.pointB
+    ) {
+      markersRef.current = { a: loop.pointA, b: loop.pointB };
+      enteredSegmentRef.current = false;
+      // …unless the playhead already sits strictly *before* B the moment the
+      // pair is installed, in which case the segment HAS been entered. Arming
+      // here — rather than waiting for the next rAF/timeupdate frame — matters
+      // for scripted cue replay: App seeks to cue.start and a caller may jump
+      // the playhead straight past B before any frame observes the in-segment
+      // position. Placing B at the playhead still cannot arm it, because then
+      // currentTime === pointB and the `< pointB - 0.05` guard is false.
+      const video = videoRef.current;
+      if (
+        video !== null &&
+        loop.pointA !== null &&
+        loop.pointB !== null &&
+        video.currentTime < loop.pointB - 0.05
+      ) {
+        enteredSegmentRef.current = true;
+      }
     }
   }, [loop]);
 
@@ -101,19 +150,25 @@ export function ABLoopControls({
       // Loop disabled: if markers exist, stop at B instead of looping
       // (segment study relies on this "play once, stop at end" semantic).
       if (!liveLoop.enabled) {
-        if (
-          liveLoop.pointA !== null &&
-          liveLoop.pointB !== null &&
-          video.currentTime >= liveLoop.pointB
-        ) {
-          video.currentTime = liveLoop.pointB;
-          video.pause();
-          // Disarm the stop: clear the markers so a manual play afterwards
-          // is not dragged back to B forever. The next scoped replay
-          // (重听这句 / 原声 / segment play) re-arms them itself.
-          if (!stopDisarmedRef.current) {
-            stopDisarmedRef.current = true;
-            onLoopChange(clearABLoop());
+        if (liveLoop.pointA !== null && liveLoop.pointB !== null) {
+          if (video.currentTime < liveLoop.pointB - 0.05) {
+            // Playback is genuinely inside the segment — arm the stop. This
+            // must happen BEFORE B can fire, so merely placing B at the
+            // playhead (currentTime === pointB) does not count as reaching it.
+            enteredSegmentRef.current = true;
+          } else if (
+            enteredSegmentRef.current &&
+            video.currentTime >= liveLoop.pointB
+          ) {
+            video.currentTime = liveLoop.pointB;
+            video.pause();
+            // Disarm the stop: clear the markers so a manual play afterwards
+            // is not dragged back to B forever. The next scoped replay
+            // (重听这句 / 原声 / segment play) re-arms them itself.
+            if (!stopDisarmedRef.current) {
+              stopDisarmedRef.current = true;
+              onLoopChange(clearABLoop());
+            }
           }
         }
         return;
