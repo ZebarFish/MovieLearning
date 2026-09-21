@@ -70,11 +70,14 @@ interface FakeVideo {
   play: ReturnType<typeof vi.fn>;
   pause: ReturnType<typeof vi.fn>;
   setTime: (t: number) => void;
+  /** jsdom media never really plays; flip this to model a playing element. */
+  setPaused: (paused: boolean) => void;
 }
 
 function makeVideo(): FakeVideo {
   const video = document.createElement('video');
   let fakeTime = 0;
+  let fakePaused = true;
   Object.defineProperty(video, 'currentTime', {
     configurable: true,
     get: () => fakeTime,
@@ -83,12 +86,25 @@ function makeVideo(): FakeVideo {
     },
   });
   // jsdom media is always "paused"; playback control is asserted via spies.
-  Object.defineProperty(video, 'paused', { configurable: true, get: () => true });
+  Object.defineProperty(video, 'paused', {
+    configurable: true,
+    get: () => fakePaused,
+  });
   const play = vi.fn();
   const pause = vi.fn();
   video.play = play as unknown as HTMLMediaElement['play'];
   video.pause = pause as unknown as HTMLMediaElement['pause'];
-  return { video, play, pause, setTime: (t: number) => { fakeTime = t; } };
+  return {
+    video,
+    play,
+    pause,
+    setTime: (t: number) => {
+      fakeTime = t;
+    },
+    setPaused: (paused: boolean) => {
+      fakePaused = paused;
+    },
+  };
 }
 
 function Harness({
@@ -180,6 +196,46 @@ describe('ABLoopControls contract', () => {
     // jsdom fires no real media events — drive `play` by hand.
     media.video.dispatchEvent(new Event('play'));
     expect(media.video.currentTime).toBe(10);
+  });
+
+  it('A2b: one click on 播放 is enough to get the segment actually playing', () => {
+    const media = makeVideo();
+    render(
+      <Harness
+        video={media.video}
+        onChange={vi.fn()}
+        initialLoop={{
+          pointA: 10,
+          pointB: 20,
+          enabled: false,
+          oneShot: false,
+        }}
+      />,
+    );
+    runFrame();
+
+    // Park on B (the frame loop holds it there).
+    media.setTime(20);
+    runFrame();
+    expect(media.video.currentTime).toBe(20);
+
+    // Healthy resume: the element is already playing when the 'play' event
+    // fires, so the handler must NOT issue a redundant play().
+    media.setPaused(false);
+    media.video.dispatchEvent(new Event('play'));
+    expect(media.video.currentTime).toBe(10);
+    expect(media.play).not.toHaveBeenCalled();
+
+    // Raced resume: a frame slid in between play() and the 'play' event and
+    // paused the element again. Reported by the user as "跳到 A 点但不播放，
+    // 要再点一次播放". The handler must re-issue play() so a single click
+    // starts the segment.
+    media.setTime(20);
+    runFrame();
+    media.setPaused(true);
+    media.video.dispatchEvent(new Event('play'));
+    expect(media.video.currentTime).toBe(10);
+    expect(media.play).toHaveBeenCalledTimes(1);
   });
 
   it('A3: dragging past B escapes the segment — no grab-back, no play-jump', () => {

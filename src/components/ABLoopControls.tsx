@@ -173,6 +173,16 @@ export function ABLoopControls({
       if (pastBRef.current) return;
       if (el.currentTime < liveLoop.pointB) return;
       el.currentTime = liveLoop.pointA;
+      // The user's play may have been cancelled by the frame loop just before
+      // this handler ran: while parked on B, every frame calls pause(), and a
+      // frame can slip in between play() and this 'play' event. Re-issue play
+      // so a single click on 播放 actually starts the segment — without this
+      // the video jumps back to A but stays paused until a second click.
+      // Re-entrancy is safe: this second 'play' event finds currentTime at A
+      // (before B) and returns at the guard above.
+      if (el.paused) {
+        void el.play();
+      }
     };
 
     const tick = (): void => {
