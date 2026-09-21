@@ -109,6 +109,18 @@ describe('ankiTemplate', () => {
     expect(ANKI_CSS).toContain('color: transparent');
     expect(ANKI_CSS).toContain('background-size: 1ch');
     expect(ANKI_CSS).toContain('background-repeat: repeat-x');
+    // The rule must shrink to the word: the element is a <div>, so in default
+    // block layout the tiled underline spans the whole card instead of ending
+    // at the last letter. Scope the check to the .spell rule BODY so an
+    // inline-block used anywhere else in the stylesheet cannot satisfy it.
+    const spellStart = ANKI_CSS.indexOf('.spell {');
+    expect(spellStart).toBeGreaterThan(-1);
+    const spellRule = ANKI_CSS.slice(
+      spellStart,
+      ANKI_CSS.indexOf('}', spellStart),
+    );
+    expect(spellRule).toContain('display: inline-block');
+    expect(spellRule).toContain('max-width: 100%');
     expect(ANKI_CSS).toContain(
       'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     );

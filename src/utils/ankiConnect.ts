@@ -620,16 +620,22 @@ export async function ensureAnkiModel(): Promise<AnkiModelStatus> {
     // The 拼写 block gets its own marker, and that marker is deliberately NOT
     // the class name: `.spell` shipped in an earlier release, so an install
     // that already has it would pass a `.spell` check and keep the old
-    // rendering forever. We fingerprint the current *declaration* instead —
-    // `background-size: 1ch` only exists in the blank-underline version.
+    // rendering forever. We fingerprint the newest *declaration* instead.
+    //   - `background-size: 1ch` marked the blank-underline release…
+    //   - but that release is now deployed, so it can no longer be the marker
+    //     (the check would pass and the full-width fix would never arrive).
+    //   - `display: inline-block;` is the newest declaration and only exists
+    //     in the current CSS, so it is the marker now.
     // Whenever the spelling rule changes again, replace this marker with
-    // something unique to the new CSS.
+    // something unique to the new CSS — otherwise existing installs never
+    // upgrade. (The trailing semicolon keeps the match on the declaration
+    // itself, not on the explanatory comment above the rule.)
     const css = styling?.css ?? '';
     const stylingStale =
       !css.includes('.word') ||
       !css.includes('.phonetic') ||
       !css.includes('.tags') ||
-      !css.includes('background-size: 1ch');
+      !css.includes('display: inline-block;');
     if (stylingStale) {
       await invoke('updateModelStyling', {
         model: { name: ANKI_MODEL_NAME, css: ANKI_CSS },

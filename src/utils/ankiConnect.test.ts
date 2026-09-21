@@ -684,6 +684,41 @@ describe('ensureAnkiModel', () => {
     expect(update.params.model.css).toContain('background-size: 1ch');
     expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(false);
   });
+
+  it('reinstalls styling that has blank underlines but not the full-width .spell fix', async () => {
+    // Regression sentinel for the follow-up fix: the previous release already
+    // ships `.spell` AND `background-size: 1ch`, so the OLD sentinel called it
+    // fresh — `display: inline-block` would never reach an existing install.
+    // Rebuild that release by stripping the two new declarations.
+    const prevCss = ANKI_CSS.replace(
+      '  display: inline-block;\n  max-width: 100%;\n',
+      '',
+    );
+    // Guard the derivation so the test can never silently become a no-op.
+    expect(prevCss).toContain('.spell');
+    expect(prevCss).toContain('background-size: 1ch');
+    expect(prevCss).not.toContain('display: inline-block;');
+
+    const calls = trackCalls({
+      modelNames: () => [ANKI_MODEL_NAME],
+      modelFieldNames: () => [...ANKI_FIELDS],
+      // Template is unchanged, so it must NOT be rewritten — again a CSS-only
+      // upgrade, which is why every install picks the fix up instantly.
+      modelTemplates: () => ({
+        [CARD_NAME]: { Front: CARD_FRONT, Back: CARD_BACK },
+      }),
+      modelStyling: () => ({ css: prevCss }),
+    });
+
+    await ensureAnkiModel();
+
+    const update = calls.find(
+      (c) => c['action'] === 'updateModelStyling',
+    ) as { params: { model: { css: string } } };
+    expect(update).toBeDefined();
+    expect(update.params.model.css).toContain('display: inline-block;');
+    expect(calls.some((c) => c['action'] === 'updateModelTemplates')).toBe(false);
+  });
 });
 
 describe('syncVocabToAnki with the built-in note type', () => {

@@ -176,9 +176,16 @@ hr#answer {
 /* 拼写 block: a fill-in-the-blank. The template still renders {{单词}} so the
    blanks are exactly as long as the word, but its glyphs are transparent —
    all the learner sees is one underline per letter. A monospace face makes
-   one 1ch background tile line up with exactly one character cell. This rule
-   must stay AFTER the .value rule (both are single-class selectors). */
+   one 1ch background tile line up with exactly one character cell.
+   display: inline-block is load-bearing: the element is a <div>, so in its
+   default block layout the box spans the whole card and repeat-x tiles the
+   underline across the entire row instead of stopping at the last letter.
+   Inline-block shrinks the box to the word; max-width: 100% keeps a very long
+   word from overflowing the card. This rule must stay AFTER the .value rule
+   (both are single-class selectors). */
 .spell {
+  display: inline-block;
+  max-width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 600;
   letter-spacing: 0;
